@@ -1,0 +1,216 @@
+QWidget {
+   background-color: #2b2b2b;
+   color: #ffffff;
+   font-family: Arial;
+   font-size: 13pt;
+}
+
+/* Заголовки меню (QPushButton) - забираємо фіолетовий відтінок при hover */
+QPushButton {
+   background-color: transparent;
+   color: #ffffff;
+   font-size: 13pt;
+   border: none;
+}
+QPushButton:hover {
+   background-color: rgba(255,255,255,0.1);
+   border-radius:3px;
+}
+
+/* Основні кнопки */
+#applyFilterButton, #resetFiltersButton, #refreshButton {
+   border: 1px solid #cccccc;
+   background-color: #444444;
+   color: #ffffff;
+   border-radius: 5px;
+   padding: 5px;
+}
+#applyFilterButton:hover, #resetFiltersButton:hover, #refreshButton:hover {
+   background-color: #555555;
+}
+
+QLineEdit {
+   background-color: #3c3f41;
+   color: #ffffff;
+   border: none;
+   font-size: 13pt;
+   padding-left: 35px;
+   border-radius: 5px;
+}
+
+QLineEdit::placeholder {
+   color: #bbbbbb;
+   font-style: italic;
+}
+
+QLineEdit:focus {
+   background-color: #3c3f41;
+   border: 1px solid #7851A9;
+   border-radius: 5px;
+}
+
+QCheckBox {
+   color: #ffffff;
+   font-size: 13pt;
+}
+
+QCheckBox::indicator {
+   width: 15px;
+   height: 15px;
+   margin-right: 5px;
+}
+
+QCheckBox::indicator:checked {
+   background-color: #cccccc;
+   border: 1px solid #ffffff;
+}
+
+QCheckBox::indicator:unchecked {
+   background-color: #ffffff;
+   border: 1px solid #ffffff;
+}
+
+QComboBox {
+   background-color: #3c3f41;
+   color: #ffffff;
+   border: none;
+   font-size: 13pt;
+   padding: 5px 25px 5px 5px;
+}
+QComboBox:focus {
+   border:1px solid #7851A9;
+}
+QComboBox::drop-down {
+   border: none;
+   background: transparent;
+   width:25px;
+}
+QComboBox::down-arrow {
+   image: url(style/images/icons/down_arrow_flat_white.png);
+   width:12px; height:12px;
+}
+QComboBox QAbstractItemView {
+   background-color: #3c3f41;
+   color: #ffffff;
+   selection-background-color: #4b4f51;
+}
+
+/* Новые стили для таблиц с улучшенным скроллбаром */
+QTableWidget {
+   background-color: #3c3f41;
+   color: #ffffff;
+   gridline-color: #5c5c5c;
+   font-size: 13pt;
+   border: 1px solid #555555;
+   border-radius: 5px;
+}
+
+QHeaderView::section {
+   background-color: #3c3f41;
+   color: #ffffff;
+   border: none;
+   padding: 4px;
+   font-size: 13pt;
+}
+
+QTableWidget::item:selected {
+   background-color: #7851A9;
+   color: white;
+}
+
+/* Стили скроллбара для таблиц */
+QScrollBar:vertical {
+   width: 0px;
+   background: transparent;
+   margin: 0px;
+   border: none;
+}
+
+QScrollBar:vertical:hover {
+   width: 8px;
+   background: transparent;
+   margin: 0px;
+   border-radius: 4px;
+}
+
+QScrollBar::handle:vertical {
+   background: rgba(180, 180, 180, 0.4);
+   min-height: 20px;
+   border-radius: 4px;
+}
+
+QScrollBar::handle:vertical:hover {
+   background: rgba(200, 200, 200, 0.7);
+}
+
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+   height: 0px;
+   background: none;
+   border: none;
+}
+
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+   background: none;
+   border: none;
+}
+
+QScrollBar:horizontal {
+   height: 0px;
+   background: transparent;
+   margin: 0px;
+   border: none;
+}
+
+QScrollBar:horizontal:hover {
+   height: 8px;
+   background: transparent;
+   margin: 0px;
+   border-radius: 4px;
+}
+
+QScrollBar::handle:horizontal {
+   background: rgba(180, 180, 180, 0.4);
+   min-width: 20px;
+   border-radius: 4px;
+}
+
+QScrollBar::handle:horizontal:hover {
+   background: rgba(200, 200, 200, 0.7);
+}
+
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+   width: 0px;
+   background: none;
+   border: none;
+}
+
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+   background: none;
+   border: none;
+}
+
+QSpinBox {
+   background-color: #3c3f41;
+   color: #ffffff;
+   border: none;
+   font-size: 13pt;
+}
+QSpinBox:focus {
+   border: 1px solid #7851A9;
+   background-color: #3c3f41;
+}
+
+QProgressBar {
+   background-color: transparent;
+   border: none;
+}
+
+QProgressBar::chunk {
+   background-color: #7851A9;
+}
+
+#themeToggleButton {
+   border: none;
+   background-color: transparent;
+}
+

@@ -1,0 +1,236 @@
+QWidget {
+   background-color: #ffffff;
+   color: #000000;
+   font-family: Arial;
+   font-size: 13pt;
+}
+
+/* Заголовки меню (QPushButton) - змінимо hover на світло-сірий без фіолетового відтінку */
+QPushButton {
+   background-color: transparent;
+   color: #000000;
+   font-size: 13pt;
+   border:none;
+}
+QPushButton:hover {
+   background-color: rgba(0,0,0,0.05);
+}
+
+/* Основні кнопки (Скинути Фільтри, Застосувати, refresh) */
+#applyFilterButton, #resetFiltersButton, #refreshButton {
+   border: 1px solid #cccccc;
+   background-color: #e0e0e0;
+   color: #000000;
+   border-radius:5px;
+   padding:5px;
+}
+
+#applyFilterButton:hover, #resetFiltersButton:hover, #refreshButton:hover {
+   background-color: #d5d5d5;
+}
+
+QLineEdit {
+   background-color: #f0f0f0;
+   color: #000000;
+   border: none;
+   font-size: 13pt;
+   padding-left: 35px;
+   border-radius: 5px;
+}
+
+QLineEdit::placeholder {
+   color: #888888;
+   font-style: italic;
+}
+
+QLineEdit:focus {
+   background-color: #ffffff;
+   border: 1px solid #7851A9;
+   border-radius: 5px;
+}
+
+QCheckBox {
+   color: #000000;
+   font-size: 13pt;
+}
+
+QCheckBox::indicator {
+   width: 15px;
+   height: 15px;
+   margin-right: 5px;
+}
+
+QCheckBox::indicator:checked {
+   background-color: #444444;
+   border: 1px solid black;
+}
+
+QCheckBox::indicator:unchecked {
+   background-color: #ffffff;
+   border: 1px solid black;
+}
+
+QComboBox {
+   background-color: #ffffff;
+   color: #000000;
+   border: none;
+   font-size: 13pt;
+   padding:5px 25px 5px 5px; 
+}
+QComboBox:focus {
+   border:1px solid #7851A9;
+}
+QComboBox::drop-down {
+   border:none;
+   width:25px;
+   background:transparent;
+}
+QComboBox::down-arrow {
+   image: url(style/images/icons/down_arrow_flat.png);
+   width:12px; height:12px;
+}
+QComboBox QAbstractItemView {
+   background-color: #ffffff;
+   color: #000000;
+   selection-background-color: #d5d5d5;
+   border:1px solid #cccccc;
+}
+
+QComboBox QAbstractItemView::item {
+   text-align: center;
+}
+
+/* Новые стили для таблиц с улучшенным скроллбаром */
+QTableWidget {
+   background-color: #ffffff;
+   color: #000000;
+   gridline-color: #eeeeee;
+   font-size: 13pt;
+   border: 1px solid #dddddd;
+   border-radius: 5px;
+}
+
+QTableWidget QTableWidgetItem {
+   color: #000000;
+}
+
+QTableWidget::item {
+   color: #000000;
+}
+
+QHeaderView::section {
+   background-color: #f0f0f0;
+   color: #000000;
+   border: none;
+   padding: 4px;
+   font-size: 13pt;
+}
+
+QTableWidget::item:selected {
+   background-color: #7851A9;
+   color: white;
+}
+
+/* Стили скроллбара для таблиц */
+QScrollBar:vertical {
+   width: 0px;
+   background: transparent;
+   margin: 0px;
+   border: none;
+}
+
+QScrollBar:vertical:hover {
+   width: 8px;
+   background: transparent;
+   margin: 0px;
+   border-radius: 4px;
+}
+
+QScrollBar::handle:vertical {
+   background: rgba(120, 120, 120, 0.4);
+   min-height: 20px;
+   border-radius: 4px;
+}
+
+QScrollBar::handle:vertical:hover {
+   background: rgba(80, 80, 80, 0.7);
+}
+
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+   height: 0px;
+   background: none;
+   border: none;
+}
+
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+   background: none;
+   border: none;
+}
+
+QScrollBar:horizontal {
+   height: 0px;
+   background: transparent;
+   margin: 0px;
+   border: none;
+}
+
+QScrollBar:horizontal:hover {
+   height: 8px;
+   background: transparent;
+   margin: 0px;
+   border-radius: 4px;
+}
+
+QScrollBar::handle:horizontal {
+   background: rgba(120, 120, 120, 0.4);
+   min-width: 20px;
+   border-radius: 4px;
+}
+
+QScrollBar::handle:horizontal:hover {
+   background: rgba(80, 80, 80, 0.7);
+}
+
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+   width: 0px;
+   background: none;
+   border: none;
+}
+
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+   background: none;
+   border: none;
+}
+
+QSpinBox {
+   background-color: #ffffff;
+   color: #000000;
+   border: none;
+   font-size: 13pt;
+}
+QSpinBox:focus {
+   border: 1px solid #7851A9;
+   background-color: #ffffff;
+}
+
+QScrollArea {
+   background-color: #ffffff;
+}
+
+QProgressBar {
+   background-color: transparent;
+   border: none;
+}
+
+QProgressBar::chunk {
+   background-color: #7851A9;
+}
+
+#searchBar {
+   /* Додаткові стилі, якщо треба */
+}
+
+#themeToggleButton {
+   border: none;
+   background-color: transparent;
+}
