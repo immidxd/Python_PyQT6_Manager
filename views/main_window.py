@@ -496,14 +496,15 @@ class MainWindow(QMainWindow):
          )
          self._status_return_timer.start(10000)  # 10 секунд
 
- def show_progress_bar(self, visible=True):
+ def show_progress_bar(self, visible=True, continuous=False):
      """
      Показує або приховує прогрес-бар з плавною анімацією.
      
      Параметри:
      - visible (bool): Якщо True, показує прогрес-бар, інакше приховує
+     - continuous (bool): Якщо True, показує безперервний режим
      """
-     logging.info(f"show_progress_bar: visible={visible}")
+     logging.info(f"show_progress_bar: visible={visible}, continuous={continuous}")
      
      # Перевіряємо, чи існують необхідні об'єкти
      if not hasattr(self, 'progress_bar') or not self.progress_bar:
@@ -606,18 +607,10 @@ class MainWindow(QMainWindow):
                  self.progress_bar_widget.raise_()
 
  def _hide_progress_bar_completed(self):
-     """Завершує приховування прогрес-бару після анімації"""
-     try:
-         logging.debug("_hide_progress_bar_completed: приховування прогрес-бару завершено")
-         self._progress_animation_is_active = False
-         self._is_progress_indeterminate = False
-         
-         if self.progress_bar_widget:
-             self.progress_bar_widget.setVisible(False)
-         if self.progress_bar:
-             self.progress_bar.setVisible(False)
-     except Exception as e:
-         logging.error(f"_hide_progress_bar_completed: Помилка при приховуванні прогрес-бару: {e}")
+     """Приховує прогрес-бар після завершення анімації"""
+     if hasattr(self, 'progress_bar_widget') and self.progress_bar_widget:
+         self.progress_bar_widget.setVisible(False)
+     logging.debug("_hide_progress_bar_completed: Прогрес-бар приховано")
 
  def resizeEvent(self, event):
      """
@@ -847,19 +840,48 @@ class MainWindow(QMainWindow):
      except Exception as e:
          logging.error(f"_update_determinate_progress: Помилка при оновленні прогресу: {e}")
 
- def update_progress_value(self, value):
+ def update_progress_bar(self, progress_info):
      """
-     Оновлює значення прогрес-бару з певним відсотком виконання.
+     Оновлює прогрес-бар на основі отриманої інформації про прогрес.
      
-     Параметри:
-     - value (int): відсоток виконання (0-100)
+     Args:
+         progress_info: Може бути або числом (відсоток) або словником з додатковою інформацією.
      """
      try:
-         progress_value = max(0, min(100, value))
-         # Викликаємо метод оновлення прогрес-бару
-         self._update_determinate_progress(progress_value)
+         # Перевіряємо тип переданої інформації
+         if isinstance(progress_info, (int, float)):
+             # Якщо передано просто число - встановлюємо його як значення
+             progress = min(max(0, int(progress_info)), 100)  # Обмежуємо значення від 0 до 100
+             
+             # Перевіряємо, чи існує прогрес-бар
+             if hasattr(self, 'progress_bar') and self.progress_bar:
+                 # Переконуємося, що прогрес-бар налаштований на нормальний режим (не безперервний)
+                 self.progress_bar.setRange(0, 100)
+                 # Встановлюємо значення
+                 self.progress_bar.setValue(progress)
+         
+         elif isinstance(progress_info, dict):
+             # Якщо передано словник з додатковою інформацією
+             if 'percent' in progress_info:
+                 progress = min(max(0, int(progress_info['percent'])), 100)
+                 
+                 # Перевіряємо, чи існує прогрес-бар
+                 if hasattr(self, 'progress_bar') and self.progress_bar:
+                     # Переконуємося, що прогрес-бар налаштований на нормальний режим (не безперервний)
+                     self.progress_bar.setRange(0, 100)
+                     # Встановлюємо значення
+                     self.progress_bar.setValue(progress)
+             
+             # Якщо є додаткова інформація - можемо показати її у статус-барі
+             if 'status' in progress_info:
+                 self.set_status_message(progress_info['status'])
+         
+         # Переконуємося, що прогрес-бар видимий
+         if hasattr(self, 'progress_bar_widget') and self.progress_bar_widget:
+             self.progress_bar_widget.setVisible(True)
+            
      except Exception as e:
-         logging.error(f"update_progress_value: Помилка при оновленні значення прогресу: {e}")
+         logging.error(f"update_progress_bar: Помилка при оновленні прогрес-бару: {e}")
 
  def show_notification(self, message, error=False, timeout=10000):
      """
@@ -900,6 +922,23 @@ class MainWindow(QMainWindow):
          self.show_notification("Таблиці оновлюються. Спробуйте пізніше.", error=True)
          return
      
+     # Показуємо прогрес-бар перед запуском діалогу
+     self.show_progress_bar(True)
+     
+     # Створюємо екземпляр діалогу для вибору типу оновлення
+     from workers import UpdateTypeDialog
+     dialog = UpdateTypeDialog(self)
+     result = dialog.exec()
+     
+     # Якщо користувач скасував операцію, виходимо
+     if result != QDialog.DialogCode.Accepted:
+         self.set_status_message("Оновлення скасовано користувачем", 5000)
+         self.show_progress_bar(False)
+         return
+     
+     # Отримуємо вибраний режим оновлення
+     force_update = dialog.is_full_update_selected()
+     
      # Встановлюємо прапорець асинхронного оновлення
      self._is_async_updating = True
      
@@ -907,24 +946,28 @@ class MainWindow(QMainWindow):
      self._products_done = False
      self._orders_done = False
      
-     logging.info("Розпочато парсинг з головного вікна")
-     
-     # Показуємо прогрес-бар перед запуском потоку
-     self.show_progress_bar(True)
-     
-     # Затримуємося для оновлення інтерфейсу перед запуском важкого процесу
-     QtCore.QTimer.singleShot(100, self._start_parsing_thread)
+     logging.info(f"Розпочато парсинг з головного вікна (режим: {'ПОВНИЙ' if force_update else 'СТАНДАРТНИЙ'})")
      
      # Встановлюємо початковий статус з позначкою активного процесу
-     self.set_status_message("Підготовка до оновлення", is_process_status=True)
+     if force_update:
+         self.set_status_message("Розпочато повне оновлення бази даних...", is_process_status=True)
+     else:
+         self.set_status_message("Розпочато стандартне оновлення бази даних...", is_process_status=True)
+     
+     # Затримуємося для оновлення інтерфейсу перед запуском важкого процесу
+     QtCore.QTimer.singleShot(100, lambda: self._start_parsing_thread(force_update))
 
- def _start_parsing_thread(self):
+ def _start_parsing_thread(self, force_update):
      """Запускає потік парсингу після короткої затримки для оновлення інтерфейсу"""
      # Створюємо потік і СИНХРОННИЙ універсальний воркер
      self.parsing_thread = QThread()
      
      # Використовуємо синхронний воркер, він більш надійний
      self.parsing_worker = UniversalParsingWorker()
+     
+     # Встановлюємо режим оновлення
+     self.parsing_worker.force_process = force_update
+     
      self.parsing_worker.moveToThread(self.parsing_thread)
      
      # Підключаємо сигнали
@@ -976,6 +1019,13 @@ class MainWindow(QMainWindow):
          self._products_done = False
          self._orders_done = False
          
+         # Оновлюємо таблиці в обох вкладках
+         if hasattr(self, 'products_tab') and self.products_tab:
+             asyncio.ensure_future(self.products_tab.apply_filters())
+         
+         if hasattr(self, 'orders_tab') and self.orders_tab:
+             asyncio.ensure_future(self.orders_tab.apply_orders_filters())
+         
          # Оновлюємо статус
          logging.debug("on_parsing_finished: Оновлення статусу до 'Базу даних оновлено'")
          self.set_status_message("Базу даних оновлено", 5000)  # 5 секунд таймаут
@@ -983,7 +1033,15 @@ class MainWindow(QMainWindow):
          # Очищаємо посилання на об'єкт потоку
          if hasattr(self, 'parsing_thread') and self.parsing_thread:
              logging.debug("on_parsing_finished: Очищення посилання на потік парсингу")
-             self.parsing_thread = None
+             try:
+                 if self.parsing_thread.isRunning():
+                     logging.debug("on_parsing_finished: Завершення потоку парсингу (quit)")
+                     self.parsing_thread.quit()
+                     logging.debug("on_parsing_finished: Очікування завершення потоку (wait)")
+                     self.parsing_thread.wait()
+                 logging.debug("on_parsing_finished: Потік завершено успішно")
+             except Exception as e:
+                 logging.error(f"on_parsing_finished: Помилка при завершенні потоку: {e}")
            
          logging.info("on_parsing_finished: Завершення парсингу успішно оброблено")
      except Exception as e:
@@ -992,6 +1050,7 @@ class MainWindow(QMainWindow):
          self.parsing_thread = None
          self._is_async_updating = False
          self.show_progress_bar(False)
+         self.show_notification(f"Помилка: {str(e)}", error=True)
 
  def _finalize_progress_animation(self):
      """Плавно завершує анімацію прогрес-бару, заповнюючи його до 100%, а потім приховує."""
@@ -1055,6 +1114,47 @@ class MainWindow(QMainWindow):
      """Показує сповіщення про помилку парсингу"""
      self.show_notification(f"Помилка парсингу: {error_msg}", error=True)
 
+ def handle_parsing_error(self, error_msg):
+     """
+     Обробляє помилки, що виникають під час парсингу.
+     
+     Args:
+         error_msg (str): Повідомлення про помилку.
+     """
+     logging.error(f"handle_parsing_error: Помилка парсингу: {error_msg}")
+     
+     try:
+         # Оновлюємо статус з повідомленням про помилку
+         self.set_status_message(f"Помилка: {error_msg}", 10000)  # 10 секунд показу
+         
+         # Показуємо повідомлення користувачу
+         self.show_notification(f"Помилка парсингу: {error_msg}", error=True)
+         
+         # Зупиняємо анімацію прогрес-бару і приховуємо його
+         self.show_progress_bar(False)
+         
+         # Скидаємо прапорець асинхронного оновлення
+         self._is_async_updating = False
+         
+         # Очищаємо потік парсингу, якщо він існує
+         if hasattr(self, 'parsing_thread') and self.parsing_thread:
+             try:
+                 if self.parsing_thread.isRunning():
+                     self.parsing_thread.quit()
+                     self.parsing_thread.wait()
+             except:
+                 pass
+             finally:
+                 self.parsing_thread = None
+                 
+         logging.info("handle_parsing_error: Обробка помилки парсингу завершена")
+     except Exception as e:
+         logging.critical(f"handle_parsing_error: Критична помилка при обробці помилки парсингу: {e}")
+         # Аварійне очищення ресурсів
+         self.parsing_thread = None
+         self._is_async_updating = False
+         self.show_progress_bar(False)
+
  def show_update_dialog_and_parse(self):
      """
      Показує діалогове вікно вибору типу оновлення та запускає процес парсингу.
@@ -1069,58 +1169,58 @@ class MainWindow(QMainWindow):
      except RuntimeError:
          # Обробляємо випадок, коли QThread було видалено
          self.parsing_thread = None
-     
+    
      # Перевіряємо, чи не відбувається оновлення таблиць
      if hasattr(self, '_is_refreshing_tables') and self._is_refreshing_tables:
          self.set_status_message("Таблиці оновлюються", is_process_status=True)
          self.show_notification("Таблиці оновлюються. Спробуйте пізніше.", error=True)
          return
-     
+    
      # Показуємо прогрес-бар перед запуском діалогу
      self.show_progress_bar(True)
-     
+    
      # Показуємо діалогове вікно для вибору типу оновлення
      from workers import UpdateTypeDialog
      dialog = UpdateTypeDialog(self)
      result = dialog.exec()
-     
+    
      # Якщо користувач скасував операцію
      if result != QDialog.DialogCode.Accepted:
          self.set_status_message("Оновлення скасовано користувачем", 5000)
          self.show_progress_bar(False)
          return
-         
+        
      # Отримуємо обраний тип оновлення
      force_update = dialog.is_full_update_selected()
-     
+    
      # Встановлюємо прапорець асинхронного оновлення
      self._is_async_updating = True
-     
+    
      # Скидаємо статуси завершення
      self._products_done = False
      self._orders_done = False
-     
+    
      # Встановлюємо статус відповідно до вибраного типу оновлення
      if force_update:
          self.set_status_message("Розпочато повне оновлення бази даних...", is_process_status=True)
      else:
          self.set_status_message("Розпочато стандартне оновлення бази даних...", is_process_status=True)
-     
+    
      # Створюємо потік і робітника
      self.parsing_thread = QThread()
      self.parsing_worker = OrderParsingWorker(force_process=force_update)
      self.parsing_worker.moveToThread(self.parsing_thread)
-     
+    
      # Підключаємо сигнали
      self.parsing_worker.status_update.connect(lambda msg: self.set_status_message(msg, is_process_status=True))
      self.parsing_worker.progress.connect(lambda value: self.update_progress_value(value))
      self.parsing_worker.parsing_error.connect(self.handle_parsing_error)
      self.parsing_worker.finished.connect(self.on_parsing_finished)
      self.parsing_thread.started.connect(self.parsing_worker.run)
-     
+    
      # Запускаємо потік з обробником
      self.parsing_thread.start()
-     
+
  def handle_parsing_error(self, error_info):
      """Обробка помилок парсингу від робітника"""
      sheet = error_info.get("sheet", "Невідомий аркуш")
@@ -1131,28 +1231,18 @@ class MainWindow(QMainWindow):
      logging.error(f"Помилка парсингу: Аркуш '{sheet}', Рядок {row}, Клієнт '{client}': {error}")
      self.show_notification(f"Помилка парсингу в аркуші '{sheet}': {error}", error=True)
 
- def on_parsing_finished(self):
-     """Обробка завершення парсингу"""
+ def update_progress_value(self, value):
+     """
+     Оновлює значення прогрес-бару з певним відсотком виконання.
+     
+     Параметри:
+     - value (int): відсоток виконання (0-100)
+     """
      try:
-         # Відключаємо потік
-         if hasattr(self, 'parsing_thread') and self.parsing_thread and self.parsing_thread.isRunning():
-             self.parsing_thread.quit()
-             self.parsing_thread.wait()
-         
-         # Оновлюємо таблиці в обох вкладках
-         if hasattr(self, 'products_tab') and self.products_tab:
-             asyncio.ensure_future(self.products_tab.apply_filters())
-         
-         if hasattr(self, 'orders_tab') and self.orders_tab:
-             asyncio.ensure_future(self.orders_tab.apply_orders_filters())
-         
-         # Показуємо повідомлення про успіх
-         self.set_status_message("Базу даних успішно оновлено", 5000)
-         
+         progress_value = max(0, min(100, value))
+         # Викликаємо метод оновлення прогрес-бару
+         self._update_determinate_progress(progress_value)
      except Exception as e:
-         logging.error(f"Помилка при завершенні оновлення бази даних: {str(e)}")
-         self.show_notification(f"Помилка: {str(e)}", error=True)
-     finally:
-         self.show_progress_bar(False)
+         logging.error(f"update_progress_value: Помилка при оновленні значення прогресу: {e}")
 
 
