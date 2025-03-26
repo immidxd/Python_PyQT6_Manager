@@ -573,7 +573,8 @@ def build_orders_query_params(orders_tab):
        'year_min': year_min,
        'year_max': year_max,
        'unpaid_only': orders_tab.unpaid_checkbox.isChecked() if hasattr(orders_tab, 'unpaid_checkbox') else False,
-       'paid_only': orders_tab.paid_checkbox.isChecked() if hasattr(orders_tab, 'paid_checkbox') else False
+       'paid_only': orders_tab.paid_checkbox.isChecked() if hasattr(orders_tab, 'paid_checkbox') else False,
+       'selected_date': orders_tab.selected_filter_date if hasattr(orders_tab, 'selected_filter_date') else None
    }
   
    # Прибираємо None значення для чистоти
@@ -686,11 +687,22 @@ def update_filter_counts(tab_obj):
                        if tab_obj.year_min.value() > tab_obj.year_min.minimum() or tab_obj.year_max.value() < tab_obj.year_max.maximum():
                            selected_count += 1
                   
-                   # Перевірка comboboxes
+                   # Перевірка comboboxes та інших фільтрів
                    if hasattr(tab_obj, 'orders_sort_combobox') and tab_obj.orders_sort_combobox.currentIndex() > 0:
                        selected_count += 1
                   
                    if hasattr(tab_obj, 'priority_combobox') and tab_obj.priority_combobox.currentText() not in ["Пріоритет", "Будь-який"]:
+                       selected_count += 1
+                       
+                   # Враховуємо фільтр дати
+                   if hasattr(tab_obj, 'selected_filter_date') and tab_obj.selected_filter_date is not None:
+                       selected_count += 1
+                       
+                   # Враховуємо чекбокси "Тільки оплачені" і "Тільки неоплачені"
+                   if hasattr(tab_obj, 'unpaid_checkbox') and tab_obj.unpaid_checkbox.isChecked():
+                       selected_count += 1
+                   
+                   if hasattr(tab_obj, 'paid_checkbox') and tab_obj.paid_checkbox.isChecked():
                        selected_count += 1
           
            # Оновлення тексту заголовка з лічильником вибраних елементів

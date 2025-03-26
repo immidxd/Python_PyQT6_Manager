@@ -24,7 +24,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QFont, QPixmap, QColor, QCursor, QIcon, QMouseEvent, QAction
 from PyQt6.QtCore import (
  Qt, QTimer, QEvent, QEasingCurve, QPoint, pyqtSignal, QPropertyAnimation, QDate,
- QThread
+ QThread, QTime, QDateTime, QSize, QRect, QMargins
 )
 
 import qtawesome as qta
@@ -58,6 +58,21 @@ import threading
 import time
 import types
 
+# Перенесені функції для фільтрації на рівень модуля
+def fix_unpaid_filter(q, session):
+    """
+    Фільтр «Тільки неоплачені» (payment_status_id=1 => «оплачено» => виключаємо).
+    """
+    q = q.filter(Order.payment_status_id != 1)
+    return q
+
+def fix_paid_filter(q, session):
+    """Функція для застосування фільтру 'Тільки оплачені'"""
+    # Фільтруємо замовлення, статус оплати яких 'оплачено' (id=1)
+    q = q.join(PaymentStatus, Order.payment_status_id == PaymentStatus.id)
+    q = q.filter(Order.payment_status_id == 1)
+    return q
+
 class OrdersTab(QWidget):
  """
  Вкладка "Замовлення":
@@ -89,6 +104,9 @@ class OrdersTab(QWidget):
 
      self.logo_label = None
      self.orders_theme_button = None
+     
+     # Змінна для збереження вибраної дати фільтрації
+     self.selected_filter_date = None
 
      # Чекбокс "Тільки неоплачені"
      self.unpaid_checkbox = QCheckBox("Тільки неоплачені")
@@ -285,6 +303,10 @@ class OrdersTab(QWidget):
      self.orders_table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
      self.orders_table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
      self.orders_table.horizontalHeader().setFixedHeight(35)
+     
+     # Змінюємо політику розміру таблиці, щоб вона розтягувалась
+     self.orders_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+     self.orders_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
 
      for idx in self.orders_optional_indices:
          self.orders_table.setColumnHidden(idx, True)
@@ -296,7 +318,7 @@ class OrdersTab(QWidget):
 
      # Пагінація
      self.orders_pagination_layout = QHBoxLayout()
-     self.orders_pagination_layout.setContentsMargins(0, 0, 0, 0)
+     self.orders_pagination_layout.setContentsMargins(0, 10, 0, 0)  # Додаємо верхній відступ
      self.orders_pagination_layout.setSpacing(8)
      self.orders_pagination_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
      self.orders_page_buttons_layout = QHBoxLayout()
@@ -410,6 +432,7 @@ class OrdersTab(QWidget):
      self.orders_filter_button.clicked.connect(lambda: asyncio.ensure_future(self.apply_orders_filters()))
      self.orders_table.cellDoubleClicked.connect(self.show_orders_cell_info)
      self.orders_table.horizontalHeader().sectionClicked.connect(self.select_orders_column)
+     self.orders_table.itemSelectionChanged.connect(self.on_orders_selection_changed)
 
      self.set_orders_scroll_style()
 
@@ -420,6 +443,9 @@ class OrdersTab(QWidget):
      self.month_max.valueChanged.connect(self.on_spinbox_value_changed)
      self.year_min.valueChanged.connect(self.on_spinbox_value_changed)
      self.year_max.valueChanged.connect(self.on_spinbox_value_changed)
+     
+     # Оновлюємо вигляд кнопки календаря
+     self._update_calendar_button_state()
 
  def set_orders_scroll_style(self):
      """
@@ -444,7 +470,6 @@ class OrdersTab(QWidget):
    
      QScrollBar:vertical:hover {
          width: 8px;
-         transition: width 0.3s;
      }
    
      QScrollBar::handle:vertical {
@@ -480,7 +505,6 @@ class OrdersTab(QWidget):
    
      QScrollBar:horizontal:hover {
          height: 8px;
-         transition: height 0.3s;
      }
    
      QScrollBar::handle:horizontal {
@@ -519,7 +543,6 @@ class OrdersTab(QWidget):
    
      QScrollBar:vertical:hover {
          width: 8px;
-         transition: width 0.3s;
      }
    
      QScrollBar::handle:vertical {
@@ -555,7 +578,6 @@ class OrdersTab(QWidget):
    
      QScrollBar:horizontal:hover {
          height: 8px;
-         transition: height 0.3s;
      }
    
      QScrollBar::handle:horizontal {
@@ -623,7 +645,41 @@ class OrdersTab(QWidget):
      if self.logo_label:
          self.logo_label.setPixmap(logo_pixmap)
 
+     # Оновлюємо стиль календаря при зміні теми
+     self._update_calendar_button_state()
+     
+     # Оновлюємо кольори тексту для QLabel в комірках таблиці
+     self.update_product_labels_color()
+
      self.update_orders_page_buttons()
+     
+ def update_product_labels_color(self):
+     """Оновлює колір тексту для QLabel з товарами при зміні теми"""
+     # Отримуємо виділені рядки
+     selected_rows = set(index.row() for index in self.orders_table.selectedIndexes())
+     
+     # Проходимо по всіх комірках і оновлюємо стиль QLabel
+     for row in range(self.orders_table.rowCount()):
+         label = self.orders_table.cellWidget(row, 1)
+         if label and isinstance(label, QLabel) and label.property("role") == "product_cell":
+             # Визначаємо колір тексту - білий для виділених, залежний від теми для невиділених
+             is_selected = row in selected_rows
+             text_color = "white" if is_selected else ("white" if self.is_dark_theme else "black")
+             
+             label.setStyleSheet(f"""
+                 QLabel {{
+                     padding: 0px 15px;
+                     margin: 0px;
+                     min-height: 38px;
+                     background-color: transparent;
+                     color: {text_color};
+                 }}
+             """)
+             
+             # Скидаємо всі відступи та використовуємо лише властивість вирівнювання Qt
+             margins = QMargins(15, 0, 15, 0)
+             label.setContentsMargins(margins)
+             label.setFixedHeight(38)
 
  def update_orders_theme_icon(self):
      from services.theme_service import update_theme_icon_for_button
@@ -862,10 +918,13 @@ class OrdersTab(QWidget):
 
  def populate_orders_filters(self, left_layout, right_layout):
      # Статус відповіді
+     # Отримуємо унікальні статуси відповіді з бази даних
      order_statuses = session.query(OrderStatus).order_by(OrderStatus.status_name).all()
-     statuses_list = [st.status_name for st in order_statuses]
+     answer_statuses = [status.status_name for status in order_statuses]
+     
+     # Створюємо секцію з чекбоксами
      self.answer_status_section = FilterSection(
-         "Статус відповіді", items=statuses_list, columns=4, maxHeight=600
+         "Статус відповіді", items=answer_statuses, columns=4, maxHeight=600
      )
      self.answer_status_section.toggle_animation.setDuration(500)
      self.answer_status_section.toggle_animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
@@ -873,14 +932,14 @@ class OrdersTab(QWidget):
      self.answer_status_section.on_toggle()
      self.answer_status_checkboxes = self.answer_status_section.all_checkboxes
      self.answer_status_section.checkbox_state_changed.connect(self.on_checkbox_state_changed)
-     self.answer_status_section.toggle_animation_finished.connect(self.on_filters_panel_toggled)
      left_layout.addWidget(self.answer_status_section)
 
      # Статус оплати
-     pay_statuses = session.query(PaymentStatus).order_by(PaymentStatus.status_name).all()
-     pay_status_list = [p.status_name for p in pay_statuses]
+     payment_statuses = session.query(PaymentStatus).order_by(PaymentStatus.status_name).all()
+     payment_status_list = [status.status_name for status in payment_statuses]
+     
      self.payment_status_section = FilterSection(
-         "Статус оплати", items=pay_status_list, columns=4, maxHeight=600
+         "Статус оплати", items=payment_status_list, columns=4, maxHeight=600
      )
      self.payment_status_section.toggle_animation.setDuration(500)
      self.payment_status_section.toggle_animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
@@ -888,12 +947,12 @@ class OrdersTab(QWidget):
      self.payment_status_section.on_toggle()
      self.payment_status_checkboxes = self.payment_status_section.all_checkboxes
      self.payment_status_section.checkbox_state_changed.connect(self.on_checkbox_state_changed)
-     self.payment_status_section.toggle_animation_finished.connect(self.on_filters_panel_toggled)
      left_layout.addWidget(self.payment_status_section)
 
      # Доставка
      delivery_methods = session.query(DeliveryMethod).order_by(DeliveryMethod.method_name).all()
-     delivery_method_list = [dm.method_name for dm in delivery_methods]
+     delivery_method_list = [method.method_name for method in delivery_methods]
+     
      self.delivery_section = FilterSection(
          "Доставка", items=delivery_method_list, columns=4, maxHeight=600
      )
@@ -903,20 +962,21 @@ class OrdersTab(QWidget):
      self.delivery_section.on_toggle()
      self.delivery_checkboxes = self.delivery_section.all_checkboxes
      self.delivery_section.checkbox_state_changed.connect(self.on_checkbox_state_changed)
-     self.delivery_section.toggle_animation_finished.connect(self.on_filters_panel_toggled)
      left_layout.addWidget(self.delivery_section)
 
-     left_layout.addStretch(0)
 
-     # Права частина
-     month_label = QLabel("По місяцях")
-     month_label.setFont(QFont("Arial", 11))
+     # Додаємо слайдери місяців та років у праву колонку
+     label_font = QFont("Arial", 11)
 
+     # Слайдер місяців з етикеткою "Місяці"
+     month_label = QLabel("Місяці")
+     month_label.setFont(label_font)
      self.month_min = QSpinBox()
      self.month_min.setFont(QFont("Arial", 13))
      self.month_min.setPrefix("Від ")
      self.month_min.setMinimum(1)
      self.month_min.setMaximum(12)
+     self.month_min.setValue(1)
      self.month_min.setFixedWidth(80)
 
      self.month_max = QSpinBox()
@@ -951,14 +1011,15 @@ class OrdersTab(QWidget):
      right_layout.addLayout(month_input_layout)
      right_layout.addLayout(month_slider_layout)
 
-     year_label = QLabel("Рік")
-     year_label.setFont(QFont("Arial", 11))
-
+     # Слайдер років з етикеткою "Роки"
+     year_label = QLabel("Роки")
+     year_label.setFont(label_font)
      self.year_min = QSpinBox()
      self.year_min.setFont(QFont("Arial", 13))
      self.year_min.setPrefix("Від ")
      self.year_min.setMinimum(2020)
      self.year_min.setMaximum(2030)
+     self.year_min.setValue(2020)
      self.year_min.setFixedWidth(80)
 
      self.year_max = QSpinBox()
@@ -993,19 +1054,7 @@ class OrdersTab(QWidget):
      right_layout.addLayout(year_input_layout)
      right_layout.addLayout(year_slider_layout)
 
-     # Приклад "soon_slider" (неактивний)
-     self.soon_slider = RangeSlider()
-     self.soon_slider.setRange(0, 100)
-     self.soon_slider.setLow(0)
-     self.soon_slider.setHigh(100)
-     self.soon_slider.setMinimumWidth(800)
-     self.soon_slider.left_margin = 0
-     self.soon_slider.right_margin = 9
-     self.soon_slider.setEnabled(False)
-     grey_style = "QSlider { background-color: #dcdcdc; }"
-     self.soon_slider.setStyleSheet(grey_style)
-
-     # combobox style
+     # combobox style - використовуємо такий же як у вкладці Товари
      combobox_style = """
      QComboBox {
          border: 1px solid #cccccc;
@@ -1043,6 +1092,7 @@ class OrdersTab(QWidget):
      }
      """
 
+     # Створюємо ComboBox-и в нижній частині правої колонки
      self.orders_sort_combobox = QComboBox()
      self.orders_sort_combobox.setFont(QFont("Arial", 13))
      self.orders_sort_combobox.setFixedHeight(35)
@@ -1061,32 +1111,24 @@ class OrdersTab(QWidget):
      self.calendar_button.setText("Дата")
      self.calendar_button.setFont(QFont("Arial", 13))
      self.calendar_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-
-     def show_calendar():
-         dlg = QDialog(self)
-         dlg.setWindowTitle("Оберіть дату")
-         layout = QVBoxLayout(dlg)
-         cal = QCalendarWidget(dlg)
-         cal.setGridVisible(True)
-         layout.addWidget(cal)
-         btn_box = QHBoxLayout()
-         ok_btn = QPushButton("OK", dlg)
-         cancel_btn = QPushButton("Скасувати", dlg)
-         btn_box.addWidget(ok_btn)
-         btn_box.addWidget(cancel_btn)
-         layout.addLayout(btn_box)
-
-         def on_ok():
-             dlg.accept()
-
-         def on_cancel():
-             dlg.reject()
-
-         ok_btn.clicked.connect(on_ok)
-         cancel_btn.clicked.connect(on_cancel)
-         dlg.exec()
-
-     self.calendar_button.clicked.connect(show_calendar)
+     self.calendar_button.setFixedHeight(35)
+     self.calendar_button.setStyleSheet("""
+         QToolButton {
+             border: 1px solid #cccccc;
+             background-color: #f0f0f0;
+             color: #000000;
+             border-radius: 5px;
+             padding: 5px 10px;
+             min-width: 100px;
+             text-align: center;
+         }
+         QToolButton:hover {
+             background-color: #e0e0e0;
+         }
+     """)
+     
+     # Додаємо обробник кліку на кнопку календаря
+     self.calendar_button.clicked.connect(self.show_date_picker)
 
      self.priority_combobox = QComboBox()
      self.priority_combobox.setFont(QFont("Arial", 13))
@@ -1122,21 +1164,21 @@ class OrdersTab(QWidget):
      self.reset_button_orders.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
      self.reset_button_orders.clicked.connect(lambda: asyncio.ensure_future(self.reset_orders_filters()))
 
-     # Повертаємо розташування елементів до одного рядка, як на вкладці Products
-     filters_btn_layout = QHBoxLayout()
-     filters_btn_layout.setSpacing(10)
-     filters_btn_layout.setContentsMargins(0, 5, 0, 0)
+     # ComboBox-и та кнопка Reset в нижній частині
+     combo_bottom_layout = QHBoxLayout()
+     combo_bottom_layout.setSpacing(10)
+     combo_bottom_layout.addWidget(self.orders_sort_combobox)
+     combo_bottom_layout.addWidget(self.calendar_button)
+     combo_bottom_layout.addWidget(self.priority_combobox)
+     combo_bottom_layout.addStretch(1)
      
-     # Всі елементи в одному рядку
-     filters_btn_layout.addWidget(self.orders_sort_combobox)
-     filters_btn_layout.addWidget(self.calendar_button)
-     filters_btn_layout.addWidget(self.priority_combobox)
-     # Додає еластичний простір між елементами та кнопкою Reset
-     filters_btn_layout.addStretch(1)
-     # Кнопка Reset справа
-     filters_btn_layout.addWidget(self.reset_button_orders)
+     btn_layout = QHBoxLayout()
+     btn_layout.setSpacing(10)
+     btn_layout.addLayout(combo_bottom_layout)
+     btn_layout.addWidget(self.reset_button_orders)
      
-     right_layout.addLayout(filters_btn_layout)
+     right_layout.addLayout(btn_layout)
+     right_layout.addStretch(1)
 
      # Прив'язуємо сигнали
      self.month_slider.valueChanged.connect(self.on_slider_value_changed)
@@ -1149,722 +1191,902 @@ class OrdersTab(QWidget):
  def on_filters_panel_toggled(self):
      self.toggle_animation_finished.emit()
 
+ def _update_calendar_button_state(self):
+     """Оновлює стан кнопки календаря відповідно до вибраної дати"""
+     if hasattr(self, 'selected_filter_date') and self.selected_filter_date:
+         # Перетворюємо QDate у рядок за допомогою методу toString()
+         date_str = self.selected_filter_date.toString("dd.MM.yyyy")
+         self.calendar_button.setText(f"Дата: {date_str}")
+         
+         # Застосовуємо стиль активного фільтра з урахуванням теми
+         if self.is_dark_theme:
+             self.calendar_button.setStyleSheet("""
+                 QToolButton {
+                     background-color: #7851A9;
+                     color: white;
+                     border: 1px solid #6a4697;
+                     border-radius: 5px;
+                     padding: 5px 10px;
+                     min-width: 100px;
+                     text-align: center;
+                 }
+                 QToolButton:hover {
+                     background-color: #6a4697;
+                 }
+                 QToolButton:pressed {
+                     background-color: #5d3d88;
+                 }
+             """)
+         else:
+             self.calendar_button.setStyleSheet("""
+                 QToolButton {
+                     background-color: #7851A9;
+                     color: white;
+                     border: 1px solid #6a4697;
+                     border-radius: 5px;
+                     padding: 5px 10px;
+                     min-width: 100px;
+                     text-align: center;
+                 }
+                 QToolButton:hover {
+                     background-color: #6a4697;
+                 }
+                 QToolButton:pressed {
+                     background-color: #5d3d88;
+                 }
+             """)
+     else:
+         self.calendar_button.setText("Дата")
+         
+         # Скидаємо стиль на стандартний з урахуванням теми
+         if self.is_dark_theme:
+             self.calendar_button.setStyleSheet("""
+                 QToolButton {
+                     border: 1px solid #444444;
+                     background-color: #333333;
+                     color: #ffffff;
+                     border-radius: 5px;
+                     padding: 5px 10px;
+                     min-width: 100px;
+                     text-align: center;
+                 }
+                 QToolButton:hover {
+                     background-color: #3a3a3a;
+                 }
+                 QToolButton:pressed {
+                     background-color: #2a2a2a;
+                 }
+             """)
+         else:
+             self.calendar_button.setStyleSheet("""
+                 QToolButton {
+                     border: 1px solid #cccccc;
+                     background-color: #f0f0f0;
+                     color: #000000;
+                     border-radius: 5px;
+                     padding: 5px 10px;
+                     min-width: 100px;
+                     text-align: center;
+                 }
+                 QToolButton:hover {
+                     background-color: #e0e0e0;
+                 }
+                 QToolButton:pressed {
+                     background-color: #d0d0d0;
+                 }
+             """)
+
  def on_checkbox_state_changed(self):
      """
-     Обробляє зміну стану чекбокса в будь-якому фільтрі.
-     Запускає фільтрацію даних.
+     Обробник зміни стану чекбоксів фільтрів.
+     Запускає відкладене оновлення фільтрів за допомогою search_timer.
      """
-     # Перевіряємо, чи не обрані одночасно обидва чекбокси "Тільки оплачені" і "Тільки неоплачені"
-     if hasattr(self, 'unpaid_checkbox') and hasattr(self, 'paid_checkbox'):
-         if self.unpaid_checkbox.isChecked() and self.paid_checkbox.isChecked():
-             # Якщо змінився paid_checkbox, вимикаємо unpaid_checkbox і навпаки
-             sender = self.sender()
-             if sender == self.unpaid_checkbox:
-                 self.paid_checkbox.blockSignals(True)
-                 self.paid_checkbox.setChecked(False)
-                 self.paid_checkbox.blockSignals(False)
-             else:
-                 self.unpaid_checkbox.blockSignals(True)
-                 self.unpaid_checkbox.setChecked(False)
-                 self.unpaid_checkbox.blockSignals(False)
+     # Запускаємо таймер, щоб не робити багато запитів при швидкій зміні кількох чекбоксів
+     self.search_timer.start(300)
      
-     # Запускаємо пошук, але переконуємося, що старі завдання скасовані
-     asyncio.ensure_future(self.apply_orders_filters())
+     # Взаємно виключаємо фільтри "Тільки неоплачені" та "Тільки оплачені"
+     if self.sender() == self.unpaid_checkbox and self.unpaid_checkbox.isChecked():
+                 self.paid_checkbox.setChecked(False)
+     elif self.sender() == self.paid_checkbox and self.paid_checkbox.isChecked():
+                 self.unpaid_checkbox.setChecked(False)
 
  def on_slider_value_changed(self):
-     if self.data_loaded:
+     """
+     Обробник зміни значення слайдера (місяців або років).
+     Оновлює пов'язані спінбокси і запускає відкладене оновлення фільтрів.
+     """
+     sender = self.sender()
+     if sender == self.month_slider:
+         self.month_min.setValue(self.month_slider.low)
+         self.month_max.setValue(self.month_slider.high)
+     elif sender == self.year_slider:
+         self.year_min.setValue(self.year_slider.low)
+         self.year_max.setValue(self.year_slider.high)
+     
+     # Запускаємо відкладене оновлення фільтрів
          self.search_timer.start(300)
 
  def on_spinbox_value_changed(self):
-     if self.data_loaded:
+     """
+     Обробник зміни значення спінбокса (місяців або років).
+     Оновлює пов'язані слайдери і запускає відкладене оновлення фільтрів.
+     """
+     sender = self.sender()
+     if sender == self.month_min:
+         self.month_slider.setLow(self.month_min.value())
+     elif sender == self.month_max:
+         self.month_slider.setHigh(self.month_max.value())
+     elif sender == self.year_min:
+         self.year_slider.setLow(self.year_min.value())
+     elif sender == self.year_max:
+         self.year_slider.setHigh(self.year_max.value())
+     
+     # Запускаємо відкладене оновлення фільтрів
          self.search_timer.start(300)
 
- async def run_orders_parsing_script(self):
+ def on_search_enter_pressed(self):
      """
-     Запускає процес оновлення даних через універсальний метод головного вікна.
-     Цей метод залишено для сумісності.
+     Обробник натискання клавіші Enter у полі пошуку.
+     Запускає застосування фільтрів одразу, а не через відкладений таймер.
      """
-     if self.parent_window:
-         self.parent_window.show_update_dialog_and_parse()
-     else:
-         # Якщо з якоїсь причини головне вікно недоступне, використовуємо запасний варіант
-         self.parent_window.start_universal_parsing()
+     # Закриваємо випадаюче вікно з підказками, якщо воно відкрите
+     self.fade_out_orders_popup()
+     
+     # Застосовуємо фільтри негайно
+     asyncio.ensure_future(self.apply_orders_filters())
 
  async def apply_orders_filters(self, is_initial_load=False, is_auto_load=False):
-    # Скасувати попереднє завдання, якщо воно існує та виконується
-    if hasattr(self, 'filter_task') and self.filter_task and not self.filter_task.done():
-        self.filter_task.cancel()
-        try:
-            await self.filter_task
-        except asyncio.CancelledError:
-            logging.debug("Попереднє завдання фільтрації скасовано")
-        except Exception as e:
-            logging.error(f"Помилка при скасуванні попереднього завдання: {str(e)}")
-    
-    # Показуємо індикатор прогресу, якщо це не автоматичне завантаження
-    if not is_auto_load:
-        self.parent_window.show_progress_bar(True)
-    
-    # Показуємо повідомлення про початок застосування фільтрів, якщо це не перше завантаження і не автоматичне
-    if not is_initial_load and not is_auto_load:
-        self.parent_window.set_status_message("Застосування фільтрів замовлень...")
-    
-    try:
-        # Отримуємо параметри фільтрів
-        from services.filter_service import build_orders_query_params
-        filter_params = build_orders_query_params(self)
-        logging.info(f"Застосовуємо фільтри замовлень з параметрами: {filter_params}")
-        
-        # Логуємо стан чекбоксів "Тільки неоплачені" та "Тільки оплачені"
-        unpaid_checked = self.unpaid_checkbox.isChecked() if hasattr(self, 'unpaid_checkbox') else False
-        paid_checked = self.paid_checkbox.isChecked() if hasattr(self, 'paid_checkbox') else False
-        logging.info(f"Стан фільтрів оплати: unpaid_checkbox={unpaid_checked}, paid_checkbox={paid_checked}")
-        
-        # Завантажуємо всі замовлення з бази даних
-        orders_data = await self.async_load_orders(filter_params)
-        
-        # Логуємо кількість отриманих замовлень
-        logging.info(f"Отримано {len(orders_data)} замовлень для відображення")
-        
-        # Завантажуємо дані та оновлюємо інтерфейс
-        self.load_orders(orders_data)
-        
-        # Якщо це не перше завантаження і не автоматичне завантаження, показуємо успішне повідомлення
-        if not is_initial_load and not is_auto_load:
-            self.parent_window.set_status_message("Фільтри застосовано успішно", 3000)
-            logging.info("Фільтри замовлень застосовано успішно")
-        
-    except Exception as e:
-        session.rollback()
-        logging.error(f"Помилка при застосуванні фільтрів: {str(e)}")
-        logging.error(traceback.format_exc())
-        if not is_auto_load:  # Не показуємо помилку при автозавантаженні
-            self.show_error_message(f"Помилка при застосуванні фільтрів: {str(e)}")
-    finally:
-        if not is_auto_load:  # Не приховуємо прогрес-бар при автозавантаженні
-            self.parent_window.show_progress_bar(False)
-
- async def async_load_orders(self, filter_params=None):
-    def blocking_query():
-        from services.filter_service import build_orders_query_params
-        
-        # Отримуємо всі параметри фільтрів, якщо не передані
-        if filter_params is None:
-            params = build_orders_query_params(self)
-        else:
-            params = filter_params
-        
-        logging.info(f"Застосовую фільтри пошуку: {params}")
-        
-        session.rollback()
-        q = session.query(Order).options(
-            joinedload(Order.client),
-            joinedload(Order.order_status),
-            joinedload(Order.payment_status),
-            joinedload(Order.payment_method),
-            joinedload(Order.delivery_method),
-            joinedload(Order.order_details).joinedload(OrderDetail.product)
-        )
-        
-        # Застосовуємо текст пошуку, якщо він є
-        search_text = params.get('search_text')
-        if search_text:
-            q = q.join(Client, Order.client_id == Client.id, isouter=True)
-            q = q.outerjoin(OrderDetail, Order.id == OrderDetail.order_id)
-            q = q.outerjoin(Product, OrderDetail.product_id == Product.id)
-            
-            q = q.filter(
+     """
+     Застосовує фільтри до замовлень і оновлює таблицю.
+     
+     :param is_initial_load: Чи це початкове завантаження даних.
+     :param is_auto_load: Чи це автоматичне завантаження (при відображенні вкладки).
+     """
+     try:
+         # Імпортуємо datetime і time прямо на початку методу, щоб уникнути конфліктів імен
+         from datetime import datetime, time, timedelta
+         
+         # Відміняємо попереднє завдання фільтрації, якщо воно існує
+         if self.current_filter_task and not self.current_filter_task.done():
+             self.current_filter_task.cancel()
+         
+         # Показуємо індикатор завантаження
+         if not is_auto_load:
+            self.orders_opacity_effect.setOpacity(0.7)
+            QApplication.processEvents()
+         
+         # Отримуємо параметри фільтрації
+         query_params = self.get_orders_filter_params()
+         
+         # Скидаємо на першу сторінку лише при початковому завантаженні або при зміні фільтрів
+         # але НЕ коли перемикаємо сторінки через пагінацію
+         if is_initial_load or self.sender() == self.orders_filter_button or self.sender() == self.reset_button_orders:
+             self.current_page = 1
+         
+         # Будуємо запит до бази даних на основі параметрів фільтрації
+         # Змінено: build_orders_query_params тепер повертає словник параметрів, а не сам запит
+         params = build_orders_query_params(self)
+         
+         # Створюємо базовий запит
+         query = session.query(Order).options(
+             joinedload(Order.order_details),
+             joinedload(Order.client),
+             joinedload(Order.order_status),
+             joinedload(Order.payment_status),
+             joinedload(Order.payment_method),
+             joinedload(Order.delivery_method),
+             # Recipient не має relationship, потрібно використовувати Address
+             # joinedload(Order.recipient),
+             # DeliveryStatus не має relationship, перевірте модель
+             # joinedload(Order.delivery_status),
+         ).order_by(desc(Order.order_date))
+         
+         # Застосовуємо фільтри на основі параметрів
+         # Пошук
+         if 'search_text' in params and params['search_text']:
+             search_text = params['search_text'].lower()
+             query = query.join(Client, Order.client_id == Client.id)
+             query = query.filter(
                 or_(
                     Client.first_name.ilike(f"%{search_text}%"),
                     Client.last_name.ilike(f"%{search_text}%"),
                     Order.tracking_number.ilike(f"%{search_text}%"),
-                    Product.productnumber.ilike(f"%{search_text}%"),
-                    Order.id.cast(String).like(f"%{search_text}%")
-                )
-            )
-            # Distinct щоб уникнути дублікатів через JOIN
-            q = q.distinct()
-        
-        # Застосовуємо фільтри відповідно до вибраних чекбоксів
-        answer_statuses = params.get('answer_statuses')
-        if answer_statuses:
-            q = q.join(OrderStatus, Order.order_status_id == OrderStatus.id)
-            q = q.filter(OrderStatus.status_name.in_(answer_statuses))
-        
-        payment_statuses = params.get('payment_statuses')
-        if payment_statuses:
-            q = q.join(PaymentStatus, Order.payment_status_id == PaymentStatus.id)
-            q = q.filter(PaymentStatus.status_name.in_(payment_statuses))
-        
-        delivery_methods = params.get('delivery_methods')
-        if delivery_methods:
-            q = q.join(DeliveryMethod, Order.delivery_method_id == DeliveryMethod.id)
-            q = q.filter(DeliveryMethod.method_name.in_(delivery_methods))
-        
-        # Фільтр по місяцях
-        month_min = params.get('month_min', 1)
-        month_max = params.get('month_max', 12)
-        if month_min > 1 or month_max < 12:
-            q = q.filter(func.extract('month', Order.order_date) >= month_min)
-            q = q.filter(func.extract('month', Order.order_date) <= month_max)
-        
-        # Фільтр по роках
-        year_min = params.get('year_min', 2020)
-        year_max = params.get('year_max', 2030)
-        if year_min > 2020 or year_max < 2030:
-            q = q.filter(func.extract('year', Order.order_date) >= year_min)
-            q = q.filter(func.extract('year', Order.order_date) <= year_max)
-        
-        # Сортування
-        sort_option = params.get('sort_option')
-        if sort_option == "Від дорожчого":
-            q = q.order_by(Order.total_amount.desc())
-        elif sort_option == "Від найдешевшого":
-            q = q.order_by(Order.total_amount.asc())
-        elif sort_option == "Від найбільшого (по кількості)":
-            # Підрахунок кількості товарів у замовленні
-            q = q.outerjoin(OrderDetail, Order.id == OrderDetail.order_id)
-            q = q.group_by(Order.id)
-            q = q.order_by(func.count(OrderDetail.id).desc())
-        elif sort_option == "Від найдавнішого":
-            q = q.order_by(Order.order_date.asc())
-        elif sort_option == "Від найновішого":
-            q = q.order_by(Order.order_date.desc())
-        else:
-            # За замовчуванням - від нових до старих
-            q = q.order_by(Order.id.desc())
-        
-        # Фільтр за пріоритетом
-        priority = params.get('priority')
-        if priority and priority not in ["Будь-який", "Пріоритет"]:
-            q = q.filter(Order.priority == int(priority))
-        
-        # Фільтр "Тільки неоплачені"
-        if params.get('unpaid_only', False):
-            q = fix_unpaid_filter(q, session)
-        
-        # Фільтр "Тільки оплачені"
-        if params.get('paid_only', False):
-            q = fix_paid_filter(q, session)
-        
-        results = q.all()
-
-        order_list = []
-        for od in results:
-            client_obj = od.client
-            if client_obj:
-                client_display = f"{client_obj.first_name or ''} {client_obj.last_name or ''}".strip()
-            else:
-                client_display = ""
-
-            order_status_text = od.order_status.status_name if od.order_status else ""
-            payment_method_text = od.payment_method.method_name if od.payment_method else ""
-            payment_status_text = od.payment_status.status_name if od.payment_status else (od.payment_status or "")
-            delivery_method_text = od.delivery_method.method_name if od.delivery_method else ""
-
-            dstat_obj = None
-            if od.delivery_status_id:
-                dstat_obj = session.query(DeliveryStatus).filter_by(id=od.delivery_status_id).first()
-            delivery_status_text = dstat_obj.status_name if dstat_obj else ""
-
-            product_numbers = []
-            cloned_numbers = []
-            product_prices = []
-            discount_list = []
-            additional_ops = []
-
-            for det in od.order_details:
-                pr = det.product
-                if pr:
-                    product_numbers.append(pr.productnumber or "")
-                    cloned_numbers.append(pr.clonednumbers or "")
-                else:
-                    product_numbers.append("N/A")
-                    cloned_numbers.append("")
-
-                if det.price is not None:
-                    product_prices.append(f"{float(det.price):.2f}".rstrip("0").rstrip("."))
-                else:
-                    product_prices.append("")
-
-                ao = ""
-                if det.additional_operation and det.additional_operation_value:
-                    ao_val = float(det.additional_operation_value)
-                    ao = f"{det.additional_operation} ({ao_val:+.2f})"
-                additional_ops.append(ao)
-
-                ds = ""
-                if det.discount_type == "Відсоток" and det.discount_value is not None:
-                    ds = f"{float(det.discount_value)}%"
-                elif det.discount_type == "Фіксована" and det.discount_value is not None:
-                    ds = f"{float(det.discount_value):.2f}"
-                discount_list.append(ds)
-
-            joined_products = ", ".join(product_numbers)
-            joined_clones = ", ".join(cloned_numbers).strip().replace(";;", ";").replace("\n", " ")
-            joined_prices = ", ".join(product_prices)
-            joined_addops = ", ".join(a for a in additional_ops if a)
-            joined_discounts = ", ".join(d for d in discount_list if d)
-
-            odata = {
-                'id': od.id,
-                'client': client_display,
-                'order_date': od.order_date,
-                'order_status_text': order_status_text,
-                'total_amount': od.total_amount,
-                'payment_method_text': payment_method_text,
-                'payment_status_text': payment_status_text,
-                'payment_date': od.payment_date,
-                'delivery_method_text': delivery_method_text,
-                'delivery_status_text': delivery_status_text,
-                'tracking_number': od.tracking_number or "",
-                'recipient_name': od.recipient_name or "",
-                'notes': od.notes or "",
-                'priority': od.priority,
-                'products_str': joined_products,
-                'clones_str': joined_clones,
-                'prices_str': joined_prices,
-                'discount_str': joined_discounts,
-                'addops_str': joined_addops,
-                'order_date_str': od.order_date.strftime("%d.%m.%Y") if od.order_date else "",
-                'payment_date_str': od.payment_date.strftime("%d.%m.%Y") if od.payment_date else ""
-            }
-            order_list.append(odata)
-        return order_list
-
-    return await asyncio.to_thread(blocking_query)
-
- def load_orders(self, orders_data):
-     self.all_orders = orders_data
-     total_orders = len(self.all_orders)
-     self.total_pages = (total_orders // self.page_size) + (1 if total_orders % self.page_size != 0 else 0)
-     if self.total_pages == 0:
-         self.total_pages = 1
-     if self.current_page > self.total_pages:
-         self.current_page = self.total_pages
-     self.data_loaded = True
-     
-     # Перевіряємо, чи активний пошук
-     search_text = self.orders_search_bar.text().strip() if hasattr(self, 'orders_search_bar') else ""
-     has_answer_filter = any(cb.isChecked() for cb in getattr(self, 'answer_status_checkboxes', []))
-     has_payment_filter = any(cb.isChecked() for cb in getattr(self, 'payment_status_checkboxes', []))
-     has_delivery_filter = any(cb.isChecked() for cb in getattr(self, 'delivery_checkboxes', []))
-     
-     # Показуємо інформацію про кількість знайдених результатів, якщо є активні фільтри
-     if search_text or has_answer_filter or has_payment_filter or has_delivery_filter or self.unpaid_checkbox.isChecked() or self.paid_checkbox.isChecked():
-         status_message = f"Знайдено замовлень: {total_orders}"
-         if self.parent_window:
-             self.parent_window.set_status_message(status_message, 5000)
-         logging.info(status_message)
-     
-     # Прибираємо логіку зміни стилю пошукового поля
-     # Поле завжди зберігатиме стандартний стиль відповідно до теми
-     
-     asyncio.ensure_future(self.animate_orders_page_change())
-
- async def animate_orders_page_change(self):
-     await self.fade_orders_table(1.0, 0.0, 200)
-     self.show_orders_page()
-     await self.fade_orders_table(0.0, 1.0, 200)
-     self.update_orders_page_buttons()
-
- async def fade_orders_table(self, start, end, duration):
-     animation = QPropertyAnimation(self.orders_opacity_effect, b"opacity")
-     animation.setDuration(duration)
-     animation.setStartValue(start)
-     animation.setEndValue(end)
-     animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
-     loop = asyncio.get_event_loop()
-     future = asyncio.Future()
-
-     def on_finished():
-         future.set_result(True)
-
-     animation.finished.connect(on_finished)
-     animation.start(QtCore.QAbstractAnimation.DeletionPolicy.DeleteWhenStopped)
-     await future
-
- def show_orders_page(self):
-     start_index = (self.current_page - 1) * self.page_size
-     end_index = min(start_index + self.page_size, len(self.all_orders))
-     self.orders_table.setRowCount(end_index - start_index)
-     
-     # Отримуємо пошуковий текст для виділення
-     search_text = self.orders_search_bar.text().strip().lower() if hasattr(self, 'orders_search_bar') else ""
-     highlight_color = QColor(255, 255, 0, 100)  # Світло-жовтий колір для виділення
-     
-     # Перевіряємо, чи є активне підсвічування рядка
-     highlighted_row_global_index = -1
-     if hasattr(self, 'highlighted_row') and self.highlighted_row is not None:
-         highlighted_row_global_index = (self.current_page - 1) * self.page_size + self.highlighted_row
-     
-     for row_num, order in enumerate(self.all_orders[start_index:end_index]):
-         try:
-             global_row_index = start_index + row_num
-             is_highlighted_row = global_row_index == highlighted_row_global_index
-             
-             item_0 = QTableWidgetItem(str(order['id']))
-             # Виділяємо співпадіння в ID
-             if (search_text and str(order['id']).lower().find(search_text) >= 0) or is_highlighted_row:
-                 item_0.setBackground(highlight_color)
-             self.orders_table.setItem(row_num, 0, item_0)
-
-             prods = order['products_str']
-             item_1 = QTableWidgetItem(prods if prods else "N/A")
-             # Виділяємо співпадіння в номерах продуктів
-             if (search_text and prods.lower().find(search_text) >= 0) or is_highlighted_row:
-                 item_1.setBackground(highlight_color)
-             self.orders_table.setItem(row_num, 1, item_1)
-
-             clones = order['clones_str']
-             item_2 = QTableWidgetItem(clones)
-             if is_highlighted_row:
-                 item_2.setBackground(highlight_color)
-             self.orders_table.setItem(row_num, 2, item_2)
-
-             cli = order['client']
-             item_3 = QTableWidgetItem(cli)
-             # Виділяємо співпадіння в іменах клієнтів
-             if (search_text and cli.lower().find(search_text) >= 0) or is_highlighted_row:
-                 item_3.setBackground(highlight_color)
-             self.orders_table.setItem(row_num, 3, item_3)
-
-             prices_str = order['prices_str']
-             item_4 = QTableWidgetItem(prices_str)
-             if is_highlighted_row:
-                 item_4.setBackground(highlight_color)
-             self.orders_table.setItem(row_num, 4, item_4)
-
-             addop_str = order['addops_str'] or ""
-             item_5 = QTableWidgetItem(addop_str)
-             if is_highlighted_row:
-                 item_5.setBackground(highlight_color)
-             self.orders_table.setItem(row_num, 5, item_5)
-
-             disc_str = order['discount_str'] or ""
-             item_6 = QTableWidgetItem(disc_str)
-             if is_highlighted_row:
-                 item_6.setBackground(highlight_color)
-             self.orders_table.setItem(row_num, 6, item_6)
-
-             total_str = ""
-             if order['total_amount'] is not None:
-                 total_str = f"{float(order['total_amount']):.2f}".rstrip('0').rstrip('.')
-             item_7 = QTableWidgetItem(total_str)
-             if is_highlighted_row:
-                 item_7.setBackground(highlight_color)
-             self.orders_table.setItem(row_num, 7, item_7)
-
-             st_text = (order['order_status_text'] or "").capitalize()
-             item_8 = QTableWidgetItem(st_text)
-             if is_highlighted_row:
-                 item_8.setBackground(highlight_color)
-             self.orders_table.setItem(row_num, 8, item_8)
-
-             pay_text = (order['payment_status_text'] or "").capitalize()
-             item_9 = QTableWidgetItem(pay_text)
-             if is_highlighted_row:
-                 item_9.setBackground(highlight_color)
-             self.orders_table.setItem(row_num, 9, item_9)
-
-             pm_text = (order['payment_method_text'] or "").capitalize()
-             item_10 = QTableWidgetItem(pm_text)
-             if is_highlighted_row:
-                 item_10.setBackground(highlight_color)
-             self.orders_table.setItem(row_num, 10, item_10)
-
-             item_11 = QTableWidgetItem("")
-             if is_highlighted_row:
-                 item_11.setBackground(highlight_color)
-             self.orders_table.setItem(row_num, 11, item_11)
-
-             notes_str = order['notes'] or ""
-             item_12 = QTableWidgetItem(notes_str)
-             if is_highlighted_row:
-                 item_12.setBackground(highlight_color)
-             self.orders_table.setItem(row_num, 12, item_12)
-
-             pd_str = order['payment_date_str'] or ""
-             item_13 = QTableWidgetItem(pd_str)
-             if is_highlighted_row:
-                 item_13.setBackground(highlight_color)
-             self.orders_table.setItem(row_num, 13, item_13)
-
-             dm_text = (order['delivery_method_text'] or "").capitalize()
-             item_14 = QTableWidgetItem(dm_text)
-             if is_highlighted_row:
-                 item_14.setBackground(highlight_color)
-             self.orders_table.setItem(row_num, 14, item_14)
-
-             tracking = order['tracking_number']
-             item_15 = QTableWidgetItem(tracking)
-             # Виділяємо співпадіння в трек-номерах
-             if (search_text and tracking.lower().find(search_text) >= 0) or is_highlighted_row:
-                 item_15.setBackground(highlight_color)
-             self.orders_table.setItem(row_num, 15, item_15)
-
-             item_16 = QTableWidgetItem(order['recipient_name'])
-             if is_highlighted_row:
-                 item_16.setBackground(highlight_color)
-             self.orders_table.setItem(row_num, 16, item_16)
-
-             dst_text = (order['delivery_status_text'] or "").capitalize()
-             item_17 = QTableWidgetItem(dst_text)
-             if is_highlighted_row:
-                 item_17.setBackground(highlight_color)
-             self.orders_table.setItem(row_num, 17, item_17)
-
-             od_str = order['order_date_str'] or ""
-             item_18 = QTableWidgetItem(od_str)
-             if is_highlighted_row:
-                 item_18.setBackground(highlight_color)
-             self.orders_table.setItem(row_num, 18, item_18)
-
-             prio_str = ""
-             if order['priority'] is not None:
-                 prio_str = str(order['priority'])
-             item_19 = QTableWidgetItem(prio_str)
-             if is_highlighted_row:
-                 item_19.setBackground(highlight_color)
-             self.orders_table.setItem(row_num, 19, item_19)
-             
-             # Якщо це підсвічений рядок, оновлюємо його індекс на поточній сторінці
-             if is_highlighted_row:
-                 self.highlighted_row = row_num
-
-         except Exception as e:
-             logging.error(f"Помилка відображення рядка {row_num} замовлень: {e}")
-
-     self.adjust_orders_table_columns()
-
- def adjust_orders_table_columns(self):
-     self.orders_table.horizontalHeader().setStretchLastSection(False)
-     self.orders_table.resizeColumnsToContents()
-
-     if not self.orders_table.isColumnHidden(12):
-         self.orders_table.horizontalHeader().setSectionResizeMode(
-             12, QHeaderView.ResizeMode.Stretch
-         )
-     else:
-         if not self.orders_table.isColumnHidden(3):
-             self.orders_table.horizontalHeader().setSectionResizeMode(
-                 3, QHeaderView.ResizeMode.Stretch
+                     Order.notes.ilike(f"%{search_text}%"),
+                     Order.details.ilike(f"%{search_text}%"),
+                     cast(Order.id, String).ilike(f"%{search_text}%")
+                 )
              )
+         
+         # Фільтри дат (місяці та роки)
+         if all(k in params for k in ['month_min', 'month_max', 'year_min', 'year_max']):
+             start_date = datetime(params['year_min'], params['month_min'], 1)
+             # Останній день місяця
+             if params['month_max'] == 12:
+                 end_date = datetime(params['year_max'] + 1, 1, 1) - timedelta(days=1)
+             else:
+                 end_date = datetime(params['year_max'], params['month_max'] + 1, 1) - timedelta(days=1)
+             
+             query = query.filter(Order.order_date.between(start_date, end_date))
+         
+         # Статуси відповіді
+         if 'answer_statuses' in params and params['answer_statuses']:
+             query = query.join(OrderStatus, Order.order_status_id == OrderStatus.id)
+             query = query.filter(OrderStatus.status_name.in_(params['answer_statuses']))
+         
+         # Статуси оплати
+         if 'payment_statuses' in params and params['payment_statuses']:
+             query = query.join(PaymentStatus, Order.payment_status_id == PaymentStatus.id)
+             query = query.filter(PaymentStatus.status_name.in_(params['payment_statuses']))
+         
+         # Методи доставки
+         if 'delivery_methods' in params and params['delivery_methods']:
+             query = query.join(DeliveryMethod, Order.delivery_method_id == DeliveryMethod.id)
+             query = query.filter(DeliveryMethod.method_name.in_(params['delivery_methods']))
+         
+         # Пріоритет
+         if 'priority' in params and params['priority'] not in ["Будь-який", "Пріоритет"]:
+             query = query.filter(Order.priority == int(params['priority']))
+         
+         # Обробляємо спеціальні фільтри "Тільки неоплачені" та "Тільки оплачені"
+         if self.unpaid_checkbox.isChecked():
+             query = fix_unpaid_filter(query, session)
+         elif self.paid_checkbox.isChecked():
+             query = fix_paid_filter(query, session)
+         
+         # Застосовуємо фільтрацію за датою, якщо вона вибрана
+         if hasattr(self, 'selected_filter_date') and self.selected_filter_date:
+             # Перетворюємо QDate у Python datetime
+             py_date = datetime(
+                 self.selected_filter_date.year(),
+                 self.selected_filter_date.month(),
+                 self.selected_filter_date.day()
+             )
+             
+             # Створюємо початок та кінець вибраного дня
+             day_start = datetime.combine(py_date.date(), time.min)
+             day_end = datetime.combine(py_date.date(), time.max)
+             
+             # Фільтруємо замовлення за вибраною датою
+             query = query.filter(Order.order_date.between(day_start, day_end))
+         
+         # Отримуємо загальну кількість замовлень для пагінації
+         total_count = await asyncio.to_thread(lambda q=query: q.count())
+         
+         # Обчислюємо загальну кількість сторінок
+         self.total_pages = max(1, (total_count + self.page_size - 1) // self.page_size)
+         
+         # Застосовуємо ліміт і зсув для поточної сторінки
+         offset = (self.current_page - 1) * self.page_size
+         query = query.limit(self.page_size).offset(offset)
+         
+         # Отримуємо замовлення для поточної сторінки
+         orders = await asyncio.to_thread(lambda q=query: q.all())
+         
+         # Зберігаємо всі замовлення для відображення
+         self.all_orders = orders
+         
+         # Оновлюємо таблицю замовлень
+         self.update_orders_table(orders)
+         
+         # Переконуємося, що таблиця розтягується правильно
+         self.orders_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+         # Застосовуємо оптимальні розміри колонок замість встановлення всіх на Stretch
+         self.apply_column_widths()
+         
+         # Оновлюємо кнопки пагінації
+         self.update_orders_page_buttons()
+         
+         # Встановлюємо прапорець, що дані завантажені
+         self.data_loaded = True
+         
+         # Відновлюємо прозорість таблиці
+         self.orders_opacity_effect.setOpacity(1.0)
+         
+     except Exception as e:
+         logging.error(f"Помилка при застосуванні фільтрів замовлень: {e}")
+         logging.error(traceback.format_exc())
+         self.orders_opacity_effect.setOpacity(1.0)
+         if not is_auto_load:
+             self.show_error_message(f"Помилка при застосуванні фільтрів: {e}")
 
-     self.orders_table.updateGeometry()
-     self.orders_table.viewport().update()
+ def get_orders_filter_params(self):
+     """
+     Збирає всі параметри фільтрації з інтерфейсу користувача.
+     
+     :return: Словник з параметрами фільтрації.
+     """
+     params = {}
+     
+     # Пошуковий запит
+     search_text = self.orders_search_bar.text().strip()
+     if search_text:
+         params['search_text'] = search_text
+     
+     # Місяці
+     params['month_min'] = self.month_min.value()
+     params['month_max'] = self.month_max.value()
+     
+     # Роки
+     params['year_min'] = self.year_min.value()
+     params['year_max'] = self.year_max.value()
+     
+     # Статус відповіді
+     selected_statuses = []
+     for i, checkbox in enumerate(self.answer_status_checkboxes):
+         if checkbox.isChecked():
+             selected_statuses.append(checkbox.text())
+     if selected_statuses:
+         params['answer_statuses'] = selected_statuses
+     
+     # Статус оплати
+     selected_payment_statuses = []
+     for i, checkbox in enumerate(self.payment_status_checkboxes):
+         if checkbox.isChecked():
+             selected_payment_statuses.append(checkbox.text())
+     if selected_payment_statuses:
+         params['payment_statuses'] = selected_payment_statuses
+     
+     # Способи доставки
+     selected_delivery_methods = []
+     for i, checkbox in enumerate(self.delivery_checkboxes):
+         if checkbox.isChecked():
+             selected_delivery_methods.append(checkbox.text())
+     if selected_delivery_methods:
+         params['delivery_methods'] = selected_delivery_methods
+     
+     # Пріоритет
+     if self.priority_combobox.currentIndex() > 1:  # Індекс > 1, бо 0 = "Пріоритет", 1 = "Будь-який"
+         params['priority'] = self.priority_combobox.currentText()
+     
+     # Сортування
+     if self.orders_sort_combobox.currentIndex() > 0:  # Індекс > 0, бо 0 = "Сортування"
+         params['sort'] = self.orders_sort_combobox.currentIndex()
+     
+     return params
 
  async def reset_orders_filters(self):
-     # Очищаємо підсвічування при скиданні фільтрів
-     self.clear_highlight()
-     
-     # Очищаємо пошукове поле без зміни стилю
-     self.orders_search_bar.clear()
-     # Не змінюємо стиль, щоб зберігати стандартний вигляд відповідно до теми
-     
-     for chlist in [
-         self.answer_status_checkboxes,
-         self.payment_status_checkboxes,
-         self.delivery_checkboxes
-     ]:
-         for cb in chlist:
-             cb.blockSignals(True)
-             cb.setChecked(False)
-             cb.blockSignals(False)
-
-     self.month_min.blockSignals(True)
-     self.month_max.blockSignals(True)
-     self.year_min.blockSignals(True)
-     self.year_max.blockSignals(True)
-
-     self.month_min.setValue(1)
-     self.month_max.setValue(12)
-     self.year_min.setValue(2020)
-     self.year_max.setValue(2030)
-
-     self.month_min.blockSignals(False)
-     self.month_max.blockSignals(False)
-     self.year_min.blockSignals(False)
-     self.year_max.blockSignals(False)
-
-     self.month_slider.blockSignals(True)
-     self.month_slider.setLow(1)
-     self.month_slider.setHigh(12)
-     self.month_slider.blockSignals(False)
-
-     self.year_slider.blockSignals(True)
-     self.year_slider.setLow(2020)
-     self.year_slider.setHigh(2030)
-     self.year_slider.blockSignals(False)
-
-     if "Сортування" not in [self.orders_sort_combobox.itemText(i) for i in range(self.orders_sort_combobox.count())]:
-         self.orders_sort_combobox.blockSignals(True)
-         self.orders_sort_combobox.insertItem(0, "Сортування")
-         self.orders_sort_combobox.model().item(0).setEnabled(False)
-         self.orders_sort_combobox.setCurrentIndex(0)
-         self.orders_sort_combobox.blockSignals(False)
-     else:
-         self.orders_sort_combobox.blockSignals(True)
-         self.orders_sort_combobox.setCurrentIndex(0)
-         self.orders_sort_combobox.blockSignals(False)
-
-     if "Пріоритет" not in [self.priority_combobox.itemText(i) for i in range(self.priority_combobox.count())]:
-         self.priority_combobox.blockSignals(True)
-         self.priority_combobox.insertItem(0, "Пріоритет")
-         self.priority_combobox.model().item(0).setEnabled(False)
-         self.priority_combobox.setCurrentIndex(0)
-         self.priority_combobox.blockSignals(False)
-     else:
-         self.priority_combobox.blockSignals(True)
-         self.priority_combobox.setCurrentIndex(0)
-         self.priority_combobox.blockSignals(False)
-
-     self.unpaid_checkbox.blockSignals(True)
-     self.unpaid_checkbox.setChecked(False)
-     self.unpaid_checkbox.blockSignals(False)
-     
-     self.paid_checkbox.blockSignals(True)
-     self.paid_checkbox.setChecked(False)
-     self.paid_checkbox.blockSignals(False)
-     
-     # Відображаємо інформацію про скидання фільтрів
-     if self.parent_window and hasattr(self.parent_window, 'status_bar'):
-         self.parent_window.status_bar.showMessage("Фільтри скинуто. Відображення всіх замовлень.", 3000)
-     
-     # Застосовуємо пошук без фільтрів
-     await self.apply_orders_filters()
-
- def toggle_orders_column(self, index, state):
-     is_checked = (state == Qt.CheckState.Checked.value)
-     self.orders_table.setColumnHidden(index, not is_checked)
-     self.adjust_orders_table_columns()
-
- def update_orders_page_buttons(self):
-     for i in reversed(range(self.orders_page_buttons_layout.count())):
-         w = self.orders_page_buttons_layout.takeAt(i).widget()
-         if w:
-             w.setParent(None)
-
-     if self.total_pages < 1:
-         return
-
-     text_color = "#ffffff" if self.is_dark_theme else "#000000"
-     base_style = f"""
-         QPushButton {{
-             border:none;
-             background:transparent;
-             color:{text_color};
-             padding:5px;
-         }}
-         QPushButton:hover {{
-             background-color:rgba(0,0,0,0.1);
-             border-radius:3px;
-         }}
      """
+     Скидає всі фільтри до початкових значень і перезавантажує дані.
+     """
+     try:
+         # Скидаємо пошуковий запит
+         self.orders_search_bar.setText("")
+         
+         # Скидаємо чекбокси "Тільки неоплачені" та "Тільки оплачені"
+         self.unpaid_checkbox.setChecked(False)
+         self.paid_checkbox.setChecked(False)
+         
+         # Скидаємо значення місяців
+         self.month_min.setValue(1)
+         self.month_max.setValue(12)
+         self.month_slider.setLow(1)
+         self.month_slider.setHigh(12)
+         
+         # Скидаємо значення років
+         self.year_min.setValue(2020)
+         self.year_max.setValue(2030)
+         self.year_slider.setLow(2020)
+         self.year_slider.setHigh(2030)
+         
+         # Скидаємо вибрані статуси відповіді
+         for checkbox in self.answer_status_checkboxes:
+             checkbox.setChecked(False)
+         
+         # Скидаємо вибрані статуси оплати
+         for checkbox in self.payment_status_checkboxes:
+             checkbox.setChecked(False)
+         
+         # Скидаємо вибрані способи доставки
+         for checkbox in self.delivery_checkboxes:
+             checkbox.setChecked(False)
+         
+         # Скидаємо пріоритет
+         self.priority_combobox.setCurrentIndex(0)
+         
+         # Скидаємо сортування
+         self.orders_sort_combobox.setCurrentIndex(0)
+         
+         # Скидаємо фільтр дати
+         self.selected_filter_date = None
+         self._update_calendar_button_state()
+         
+         # Перезавантажуємо дані
+         await self.apply_orders_filters()
+         
+     except Exception as e:
+         logging.error(f"Помилка при скиданні фільтрів замовлень: {e}")
+         logging.error(traceback.format_exc())
+         self.show_error_message(f"Помилка при скиданні фільтрів: {e}")
 
-     prev_btn = QPushButton("◀")
-     prev_btn.setFont(QFont("Arial", 13))
-     prev_btn.setFixedHeight(35)
-     prev_btn.setStyleSheet(base_style)
-     prev_btn.setEnabled(self.current_page > 1)
-     prev_btn.clicked.connect(lambda: self.go_to_orders_page(self.current_page - 1))
-     self.orders_page_buttons_layout.addWidget(prev_btn)
-
-     max_buttons = 7
-     start_page = max(1, self.current_page - 3)
-     end_page = min(start_page + max_buttons - 1, self.total_pages)
-     if end_page - start_page < max_buttons - 1:
-         start_page = max(1, end_page - max_buttons + 1)
-
-     for p in range(start_page, end_page + 1):
-         btn = QPushButton(str(p))
-         btn.setFont(QFont("Arial", 13))
-         btn.setFixedHeight(35)
-         if p == self.current_page:
-             btn.setStyleSheet(f"""
-                 QPushButton {{
-                     font-weight:bold;
-                     border:none;
-                     background:rgba(0,0,0,0.1);
-                     padding:5px;
-                     border-radius:3px;
-                     color:{text_color};
+ def update_orders_table(self, orders):
+     """
+     Оновлює таблицю замовлень новими даними.
+     
+     :param orders: Список об'єктів Order для відображення.
+     """
+     try:
+         # Очищаємо таблицю
+         self.orders_table.setRowCount(0)
+         
+         if not orders:
+             return
+         
+         # Встановлюємо кількість рядків
+         self.orders_table.setRowCount(len(orders))
+         
+         # Заповнюємо таблицю даними
+         for row, order in enumerate(orders):
+             # ID замовлення
+             id_item = QTableWidgetItem(str(order.id))
+             self.orders_table.setItem(row, 0, id_item)
+             
+             # Товари (отримуємо список з деталей замовлення)
+             products_list = []
+             if order.order_details:
+                 for detail in order.order_details:
+                     if detail.product:
+                         # Виправлення: використовуємо productnumber замість name, яке відсутнє в моделі Product
+                         product_info = f"{detail.product.productnumber or 'Невідомо'}<sup>{detail.quantity or 1}</sup>"
+                         products_list.append(product_info)
+             products_text = "; ".join(products_list) if products_list else "Немає товарів"
+             
+             # Створюємо QLabel з HTML-розміткою замість QTableWidgetItem
+             from PyQt6.QtWidgets import QLabel
+             products_label = QLabel(products_text)
+             products_label.setTextFormat(Qt.TextFormat.RichText)
+             
+             # Зробимо стиль більш відповідним до стилю комірок таблиці "товари"
+             # Збільшуємо лівий відступ для узгодження з таблицею товарів (з 10px до 15px)
+             products_label.setFont(QFont("Arial", 13))
+             # Встановлюємо стиль з урахуванням поточної теми
+             text_color = "white" if self.is_dark_theme else "black"
+             products_label.setStyleSheet(f"""
+                 QLabel {{
+                     padding: 5px 15px;
+                     margin: 5px 0;
+                     min-height: 30px;
+                     background-color: transparent;
+                     color: {text_color};
                  }}
              """)
+             products_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+             
+             # Встановлюємо внутрішні відступи для вирівнювання
+             margins = products_label.contentsMargins()
+             margins.setTop(-9)  # Збільшуємо від'ємний відступ зверху ще більше
+             margins.setBottom(9)
+             products_label.setContentsMargins(margins)
+             
+             # Зберігаємо мітку для можливості оновлення кольору при зміні теми
+             products_label.setProperty("role", "product_cell")
+             
+             # Встановлюємо QLabel в комірку таблиці
+             self.orders_table.setCellWidget(row, 1, products_label)
+             
+             # Клони номерів (якщо є)
+             clones_item = QTableWidgetItem(order.alternative_order_number or "")
+             self.orders_table.setItem(row, 2, clones_item)
+             
+             # Клієнт
+             client_name = "Невідомо"
+             if order.client:
+                 client_name = f"{order.client.first_name or ''} {order.client.last_name or ''}".strip()
+                 if not client_name:
+                     client_name = "Без імені"
+             client_item = QTableWidgetItem(client_name)
+             self.orders_table.setItem(row, 3, client_item)
+             
+             # Ціна
+             price_amount = order.total_amount or 0
+             price_formatted = f"{int(price_amount)}" if price_amount == int(price_amount) else f"{price_amount}"
+             price_item = QTableWidgetItem(price_formatted)
+             self.orders_table.setItem(row, 4, price_item)
+             
+             # Додаткова операція
+             extra_item = QTableWidgetItem("0")  # Цього поля немає в моделі Order
+             self.orders_table.setItem(row, 5, extra_item)
+             
+             # Знижка
+             discount_item = QTableWidgetItem("0")  # Цього поля немає в моделі Order
+             self.orders_table.setItem(row, 6, discount_item)
+             
+             # Загальна сума
+             total_amount = order.total_amount or 0
+             total_formatted = f"{int(total_amount)}" if total_amount == int(total_amount) else f"{total_amount}"
+             total_item = QTableWidgetItem(total_formatted)
+             self.orders_table.setItem(row, 7, total_item)
+             
+             # Статус замовлення
+             status_name = order.order_status.status_name if order.order_status else "Невідомо"
+             status_item = QTableWidgetItem(status_name)
+             self.orders_table.setItem(row, 8, status_item)
+             
+             # Статус оплати
+             payment_status_name = order.payment_status.status_name if order.payment_status else "Невідомо"
+             payment_status_item = QTableWidgetItem(payment_status_name)
+             self.orders_table.setItem(row, 9, payment_status_item)
+             
+             # Метод оплати
+             payment_method_name = order.payment_method.method_name if order.payment_method else "Невідомо"
+             payment_method_item = QTableWidgetItem(payment_method_name)
+             self.orders_table.setItem(row, 10, payment_method_item)
+             
+             # Уточнення
+             specification_item = QTableWidgetItem(order.notes or "")  # Було 'specification', змінено на 'notes'
+             self.orders_table.setItem(row, 11, specification_item)
+             
+             # Коментар
+             comment_item = QTableWidgetItem(order.details or "")  # Було 'comment', змінено на 'details'
+             self.orders_table.setItem(row, 12, comment_item)
+             
+             # Дата оплати
+             payment_date = ""
+             if order.payment_date:
+                 payment_date = order.payment_date.strftime("%d.%m.%Y")
+             payment_date_item = QTableWidgetItem(payment_date)
+             self.orders_table.setItem(row, 13, payment_date_item)
+             
+             # Доставка
+             delivery_method_name = order.delivery_method.method_name if order.delivery_method else "Невідомо"
+             delivery_method_item = QTableWidgetItem(delivery_method_name)
+             self.orders_table.setItem(row, 14, delivery_method_item)
+             
+             # Трек-номер
+             tracking_item = QTableWidgetItem(order.tracking_number or "")
+             self.orders_table.setItem(row, 15, tracking_item)
+             
+             # Отримувач
+             recipient_name = order.recipient_name or "Невідомо"
+             recipient_item = QTableWidgetItem(recipient_name)
+             self.orders_table.setItem(row, 16, recipient_item)
+             
+             # Статус доставки - перевірте, чи є таке поле в моделі Order
+             delivery_status_name = "Невідомо"  # Потрібно перевірити доступність цього поля
+             delivery_status_item = QTableWidgetItem(delivery_status_name)
+             self.orders_table.setItem(row, 17, delivery_status_item)
+             
+             # Дата замовлення
+             order_date = ""
+             if order.order_date:
+                 order_date = order.order_date.strftime("%d.%m.%Y")
+             order_date_item = QTableWidgetItem(order_date)
+             self.orders_table.setItem(row, 18, order_date_item)
+             
+             # Пріоритет
+             priority_item = QTableWidgetItem(str(order.priority or 0))
+             self.orders_table.setItem(row, 19, priority_item)
+         
+         # Підганяємо ширину стовпців під вміст
+         self.orders_table.resizeColumnsToContents()
+         
+         # Застосовуємо оптимальні розміри колонок
+         self.apply_column_widths()
+         
+     except Exception as e:
+         logging.error(f"Помилка при оновленні таблиці замовлень: {e}")
+         logging.error(traceback.format_exc())
+         self.show_error_message(f"Помилка при оновленні таблиці: {e}")
+
+ def apply_column_widths(self):
+     """
+     Застосовує оптимальні розміри для колонок таблиці.
+     """
+     try:
+         # Спочатку встановлюємо режим Stretch для всіх колонок
+         self.orders_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+         
+         # Колонки з коротким вмістом - ResizeToContents
+         columns_to_optimize = [
+             4,   # Ціна
+             7,   # Сума
+             8,   # Статус
+             9,   # Статус оплати
+             10,  # Метод оплати
+             14,  # Доставка
+             18   # Дата замовлення
+         ]
+         
+         # Спочатку встановлюємо ResizeToContents для обчислення оптимальної ширини
+         for col in columns_to_optimize:
+             self.orders_table.horizontalHeader().setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+         
+         # Потім фіксуємо ширину колонок, додаючи додатковий відступ
+         for col in columns_to_optimize:
+             # Отримуємо поточну ширину і додаємо до неї 25 пікселів
+             current_width = self.orders_table.horizontalHeader().sectionSize(col)
+             # Встановлюємо фіксовану ширину колонки з додатковим відступом
+             self.orders_table.horizontalHeader().setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
+             self.orders_table.horizontalHeader().resizeSection(col, current_width + 25)
+             
+         # Колонки з детальною інформацією залишаються на Stretch
+         detail_columns = [11, 12]  # Уточнення, Коментар
+         for col in detail_columns:
+             self.orders_table.horizontalHeader().setSectionResizeMode(col, QHeaderView.ResizeMode.Stretch)
+     except Exception as e:
+         logging.error(f"Помилка при застосуванні ширини колонок: {e}")
+
+ def update_orders_page_buttons(self):
+     """
+     Оновлює кнопки пагінації на основі поточної сторінки та загальної кількості сторінок.
+     """
+     try:
+         # Очищаємо поточні кнопки
+         while self.orders_page_buttons_layout.count():
+             item = self.orders_page_buttons_layout.takeAt(0)
+             if item.widget():
+                 item.widget().deleteLater()
+         
+         # Якщо сторінок менше 2, не показуємо пагінацію
+         if self.total_pages < 2:
+             return
+         
+         # Ультрамінімалістичний стиль пагінації
+         if self.is_dark_theme:
+             btn_style = """
+                 QPushButton {
+                     background-color: transparent;
+                     color: #777777;
+                     border: none;
+                     font-size: 10pt;
+                     min-width: 24px;
+                     max-width: 24px;
+                     min-height: 24px;
+                     max-height: 24px;
+                     margin: 0px;
+                     padding: 0px;
+                 }
+                 QPushButton:hover {
+                     color: #ffffff;
+                 }
+                 QPushButton:disabled {
+                     color: #444444;
+                 }
+             """
+             active_btn_style = """
+                 QPushButton {
+                     background-color: #7851A9;
+                     color: white;
+                     border: none;
+                     border-radius: 2px;
+                     font-size: 10pt;
+                     font-weight: bold;
+                     min-width: 24px;
+                     max-width: 24px;
+                     min-height: 24px;
+                     max-height: 24px;
+                     margin: 0px;
+                     padding: 0px;
+                 }
+             """
          else:
-             btn.setStyleSheet(base_style)
-         btn.clicked.connect(lambda _, page=p: self.go_to_orders_page(page))
-         self.orders_page_buttons_layout.addWidget(btn)
-
-     if end_page < self.total_pages:
-         if end_page < self.total_pages - 1:
-             ellips2 = QLabel("...")
-             ellips2.setFont(QFont("Arial", 13))
-             ellips2.setStyleSheet(f"color:{text_color};")
-             self.orders_page_buttons_layout.addWidget(ellips2)
-
-         last_btn = QPushButton(str(self.total_pages))
-         last_btn.setFont(QFont("Arial", 13))
-         last_btn.setFixedHeight(35)
-         last_btn.setStyleSheet(base_style)
-         last_btn.clicked.connect(lambda: self.go_to_orders_page(self.total_pages))
-         self.orders_page_buttons_layout.addWidget(last_btn)
-
-     next_btn = QPushButton("▶")
-     next_btn.setFont(QFont("Arial", 13))
-     next_btn.setFixedHeight(35)
-     next_btn.setStyleSheet(base_style)
-     next_btn.setEnabled(self.current_page < self.total_pages)
-     next_btn.clicked.connect(lambda: self.go_to_orders_page(self.current_page + 1))
-     self.orders_page_buttons_layout.addWidget(next_btn)
+             btn_style = """
+                 QPushButton {
+                     background-color: transparent;
+                     color: #777777;
+                     border: none;
+                     font-size: 10pt;
+                     min-width: 24px;
+                     max-width: 24px;
+                     min-height: 24px;
+                     max-height: 24px;
+                     margin: 0px;
+                     padding: 0px;
+                 }
+                 QPushButton:hover {
+                     color: #333333;
+                 }
+                 QPushButton:disabled {
+                     color: #cccccc;
+                 }
+             """
+             active_btn_style = """
+                 QPushButton {
+                     background-color: #7851A9;
+                     color: white;
+                     border: none;
+                     border-radius: 2px;
+                     font-size: 10pt;
+                     font-weight: bold;
+                     min-width: 24px;
+                     max-width: 24px;
+                     min-height: 24px;
+                     max-height: 24px;
+                     margin: 0px;
+                     padding: 0px;
+                 }
+             """
+         
+         # Кнопка "на першу сторінку"
+         first_button = QPushButton("«")
+         first_button.setStyleSheet(btn_style)
+         first_button.setEnabled(self.current_page > 1)
+         first_button.clicked.connect(lambda: self.go_to_orders_page(1))
+         self.orders_page_buttons_layout.addWidget(first_button)
+         
+         # Кнопка "назад"
+         prev_button = QPushButton("‹")
+         prev_button.setStyleSheet(btn_style)
+         prev_button.setEnabled(self.current_page > 1)
+         prev_button.clicked.connect(lambda: self.go_to_orders_page(self.current_page - 1))
+         self.orders_page_buttons_layout.addWidget(prev_button)
+         
+         # Визначаємо діапазон сторінок для відображення
+         # Показуємо максимально 5 сторінок: поточну, 2 до і 2 після
+         start_page = max(1, self.current_page - 2)
+         end_page = min(self.total_pages, start_page + 4)
+         
+         # Якщо показуємо менше 5 сторінок в кінці, то показуємо більше на початку
+         if end_page - start_page < 4:
+             start_page = max(1, end_page - 4)
+         
+         # Додаємо кнопки для кожної сторінки в діапазоні
+         for page in range(start_page, end_page + 1):
+             page_button = QPushButton(str(page))
+             
+             # Виділяємо поточну сторінку
+             if page == self.current_page:
+                 page_button.setStyleSheet(active_btn_style)
+             else:
+                 page_button.setStyleSheet(btn_style)
+                 
+             page_button.clicked.connect(lambda _, p=page: self.go_to_orders_page(p))
+             self.orders_page_buttons_layout.addWidget(page_button)
+         
+         # Кнопка "вперед"
+         next_button = QPushButton("›")
+         next_button.setStyleSheet(btn_style)
+         next_button.setEnabled(self.current_page < self.total_pages)
+         next_button.clicked.connect(lambda: self.go_to_orders_page(self.current_page + 1))
+         self.orders_page_buttons_layout.addWidget(next_button)
+         
+         # Кнопка "на останню сторінку"
+         last_button = QPushButton("»")
+         last_button.setStyleSheet(btn_style)
+         last_button.setEnabled(self.current_page < self.total_pages)
+         last_button.clicked.connect(lambda: self.go_to_orders_page(self.total_pages))
+         self.orders_page_buttons_layout.addWidget(last_button)
+         
+     except Exception as e:
+         logging.error(f"Помилка при оновленні кнопок пагінації: {e}")
+         logging.error(traceback.format_exc())
 
  def go_to_orders_page(self, page):
+     """
+     Переходить на вказану сторінку замовлень.
+     
+     :param page: Номер сторінки, на яку потрібно перейти.
+     """
      if page != self.current_page and 1 <= page <= self.total_pages:
          self.current_page = page
-         asyncio.ensure_future(self.animate_orders_page_change())
+         # Перезавантажуємо дані для нової сторінки
+         asyncio.ensure_future(self.apply_orders_filters())
+         
+         # Після оновлення даних переконуємося, що таблиця розтягується правильно
+         self.orders_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+         # Застосовуємо оптимальні розміри колонок замість встановлення всіх на Stretch
+         self.apply_column_widths()
 
- def show_orders_cell_info(self, row, column):
-     item = self.orders_table.item(row, column)
-     if item:
-         QMessageBox.information(
-             self, "Деталі комірки (Замовлення)", f"Вміст:\n\n{item.text()}"
-         )
-
- def select_orders_column(self, index):
-     """
-     Вибирає стовпець у таблиці замовлень.
-     """
-     self.orders_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectColumns)
-     self.orders_table.selectColumn(index)
-     self.orders_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-
- def clear_highlight(self):
-     """Очищає підсвічування рядків у таблиці замовлень"""
-     self.highlighted_row = None
-
- def on_search_enter_pressed(self):
-     """
-     Обробляє натискання Enter в полі пошуку.
-     Запускає пошук із застосуванням фільтрів.
-     """
-     if self.orders_completer_list.isVisible():
-         self.fade_out_orders_popup()
-     
-     # Очищаємо підсвічування при пошуку
-     self.clear_highlight()
-     
-     # Запускаємо пошук з новим текстом
-     logging.info(f"Початок пошуку за текстом: '{self.orders_search_bar.text().strip()}'")
-     asyncio.ensure_future(self.apply_orders_filters())
-     
  def show_error_message(self, message):
      """
-     Показує повідомлення про помилку.
-     """
-     if hasattr(self, 'parent_window') and self.parent_window:
-         self.parent_window.set_status_message(f"Помилка: {message}", 5000)
+     Показує повідомлення про помилку користувачу.
      
+     :param message: Текст повідомлення про помилку.
+     """
      QMessageBox.critical(self, "Помилка", message)
+
+ def show_orders_cell_info(self, row, column):
+     """
+     Показує повну інформацію про вміст комірки при подвійному кліку.
+     
+     :param row: Індекс рядка.
+     :param column: Індекс стовпця.
+     """
+     try:
+         # Отримуємо текст з комірки
+         item = self.orders_table.item(row, column)
+         if not item:
+             return
+         
+         text = item.text()
+         if not text:
+             return
+         
+         # Створюємо діалогове вікно для показу повного тексту
+         detail_dialog = QDialog(self)
+         detail_dialog.setWindowTitle(f"Інформація - {self.orders_column_names[column]}")
+         detail_dialog.setMinimumSize(400, 300)
+         
+         layout = QVBoxLayout(detail_dialog)
+         layout.setContentsMargins(20, 20, 20, 20)
+         
+         # Додаємо мітку з повним текстом
+         label = QLabel(text)
+         label.setWordWrap(True)
+         label.setFont(QFont("Arial", 13))
+         label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+         
+         layout.addWidget(label)
+         
+         # Додаємо кнопку закриття
+         close_button = QPushButton("Закрити")
+         close_button.clicked.connect(detail_dialog.accept)
+         close_button.setFont(QFont("Arial", 13))
+         
+         layout.addWidget(close_button, 0, Qt.AlignmentFlag.AlignCenter)
+         
+         # Показуємо діалогове вікно
+         detail_dialog.exec()
+         
+     except Exception as e:
+         logging.error(f"Помилка при показі інформації про комірку: {e}")
+         logging.error(traceback.format_exc())
+         self.show_error_message(f"Помилка при показі інформації: {e}")
+
+ def select_orders_column(self, column_index):
+     """
+     Обробник кліку на заголовок стовпця.
+     Виділяє всю колонку при натисканні на заголовок.
+     
+     :param column_index: Індекс вибраного стовпця.
+     """
+     # Тимчасово міняємо режим виділення на виділення колонок
+     self.orders_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectColumns)
+     # Виділяємо колонку
+     self.orders_table.selectColumn(column_index)
+     # Повертаємо режим виділення на виділення рядків
+     self.orders_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+
+ def toggle_orders_column(self, column_index, state):
+     """
+     Перемикає видимість стовпця в таблиці.
+     
+     :param column_index: Індекс стовпця.
+     :param state: Новий стан (ввімкнено/вимкнено).
+     """
+     try:
+         # Змінюємо видимість стовпця залежно від стану чекбокса
+         self.orders_table.setColumnHidden(column_index, not state)
+         
+         # Підганяємо ширину стовпців під вміст, якщо стовпець став видимим
+         if state:
+             self.orders_table.resizeColumnToContents(column_index)
+             
+     except Exception as e:
+         logging.error(f"Помилка при перемиканні видимості стовпця: {e}")
+         logging.error(traceback.format_exc())
+         self.show_error_message(f"Помилка при перемиканні видимості стовпця: {e}")
+
+ async def run_orders_parsing_script(self):
+     """
+     Запускає скрипт парсингу замовлень з Google Sheets.
+     """
+     try:
+         # Показуємо індикатор завантаження
+         self.orders_opacity_effect.setOpacity(0.7)
+         QApplication.processEvents()
+         
+         logging.info("Запуск парсингу замовлень з Google Sheets...")
+         
+         # Створюємо та запускаємо воркер для парсингу в окремому потоці
+         worker = OrderParsingWorker()
+         result = await asyncio.to_thread(worker.parse_orders)
+         
+         if result:
+             logging.info("Парсинг замовлень завершено успішно. Оновлюємо таблицю...")
+             # Оновлюємо таблицю після успішного парсингу
+             await self.apply_orders_filters()
+         else:
+             logging.error("Помилка при парсингу замовлень")
+             self.show_error_message("Помилка при парсингу замовлень")
+         
+         # Відновлюємо прозорість таблиці
+         self.orders_opacity_effect.setOpacity(1.0)
+         
+     except Exception as e:
+         logging.error(f"Помилка при запуску скрипта парсингу замовлень: {e}")
+         logging.error(traceback.format_exc())
+         self.orders_opacity_effect.setOpacity(1.0)
+         self.show_error_message(f"Помилка при парсингу замовлень: {e}")
      
  def showEvent(self, event):
      """
@@ -1876,174 +2098,287 @@ class OrdersTab(QWidget):
      # Перевіряємо, чи дані вже завантажені
      if not self.data_loaded and hasattr(self, 'all_orders') and self.all_orders is not None and len(self.all_orders) == 0:
          logging.info("OrdersTab: автоматичне завантаження даних при відображенні")
-         # Запускаємо асинхронне завантаження з параметром is_auto_load=True
-         asyncio.ensure_future(self.apply_orders_filters(is_initial_load=True, is_auto_load=True))
+         # Запускаємо асинхронне завантаження з параметром is_initial_load=True
+         asyncio.ensure_future(self.apply_orders_filters(is_initial_load=True))
      else:
          logging.debug("OrdersTab: дані вже завантажені, автозавантаження не потрібне")
 
-def fix_unpaid_filter(q, session):
-    """
-    Фільтр «Тільки неоплачені» (payment_status_id=1 => «оплачено» => виключаємо).
-    """
-    q = q.filter(Order.payment_status_id != 1)
-    return q
+ def show_date_picker(self):
+     """
+     Відкриває діалогове вікно для вибору дати фільтрації.
+     """
+     try:
+         # Створюємо діалогове вікно для вибору дати
+         date_dialog = QDialog(self)
+         date_dialog.setWindowTitle("Вибір дати")
+         date_dialog.setFixedSize(380, 400)
+         
+         # Налаштовуємо стиль діалогу залежно від поточної теми
+         if self.is_dark_theme:
+             dialog_style = """
+                 QDialog {
+                     background-color: #333333;
+                     color: #ffffff;
+                 }
+                 QLabel {
+                     color: #ffffff;
+                     font-size: 13pt;
+                 }
+                 QPushButton {
+                     background-color: #444444;
+                     color: #ffffff;
+                     border: 1px solid #555555;
+                     border-radius: 5px;
+                     padding: 8px 15px;
+                     font-size: 12pt;
+                 }
+                 QPushButton:hover {
+                     background-color: #555555;
+                 }
+                 QPushButton#clearButton {
+                     background-color: #555555;
+                     color: #ffffff;
+                 }
+                 QPushButton#clearButton:hover {
+                     background-color: #666666;
+                 }
+                 QPushButton#okButton {
+                     background-color: #7851A9;
+                     color: #ffffff;
+                 }
+                 QPushButton#okButton:hover {
+                     background-color: #6a4697;
+                 }
+             """
+         else:
+             dialog_style = """
+                 QDialog {
+                     background-color: #f5f5f5;
+                     color: #333333;
+                 }
+                 QLabel {
+                     color: #333333;
+                     font-size: 13pt;
+                 }
+                 QPushButton {
+                     background-color: #f0f0f0;
+                     color: #333333;
+                     border: 1px solid #cccccc;
+                     border-radius: 5px;
+                     padding: 8px 15px;
+                     font-size: 12pt;
+                 }
+                 QPushButton:hover {
+                     background-color: #e0e0e0;
+                 }
+                 QPushButton#clearButton {
+                     background-color: #e0e0e0;
+                     color: #333333;
+                 }
+                 QPushButton#clearButton:hover {
+                     background-color: #d0d0d0;
+                 }
+                 QPushButton#okButton {
+                     background-color: #7851A9;
+                     color: #ffffff;
+                 }
+                 QPushButton#okButton:hover {
+                     background-color: #6a4697;
+                 }
+             """
+         
+         date_dialog.setStyleSheet(dialog_style)
+         
+         # Створюємо основний макет діалогу
+         dialog_layout = QVBoxLayout(date_dialog)
+         dialog_layout.setContentsMargins(20, 20, 20, 20)
+         dialog_layout.setSpacing(15)
+         
+         # Додаємо віджет календаря
+         calendar = QCalendarWidget()
+         calendar.setGridVisible(True)
+         calendar.setFont(QFont("Arial", 12))
+         
+         # Стилізуємо календар залежно від теми
+         calendar_style = self._get_calendar_style()
+         calendar.setStyleSheet(calendar_style)
+         
+         # Встановлюємо поточну вибрану дату, якщо вона є
+         if hasattr(self, 'selected_filter_date') and self.selected_filter_date:
+             calendar.setSelectedDate(self.selected_filter_date)
+         
+         dialog_layout.addWidget(calendar)
+         
+         # Додаємо рядок кнопок
+         buttons_layout = QHBoxLayout()
+         buttons_layout.setSpacing(10)
+         
+         # Кнопка "Очистити"
+         clear_button = QPushButton("Очистити")
+         clear_button.setFont(QFont("Arial", 12))
+         clear_button.setObjectName("clearButton")
+         clear_button.clicked.connect(lambda: self._on_date_cleared(date_dialog))
+         buttons_layout.addWidget(clear_button)
+         
+         # Кнопка "OK"
+         ok_button = QPushButton("OK")
+         ok_button.setFont(QFont("Arial", 12))
+         ok_button.setObjectName("okButton")
+         ok_button.clicked.connect(lambda: self._on_date_selected(calendar.selectedDate(), date_dialog))
+         buttons_layout.addWidget(ok_button)
+         
+         dialog_layout.addLayout(buttons_layout)
+         
+         # Показуємо діалогове вікно
+         date_dialog.exec()
+         
+     except Exception as e:
+         logging.error(f"Помилка при відкритті календаря: {e}")
+         logging.error(traceback.format_exc())
+         self.show_error_message(f"Помилка при відкритті календаря: {e}")
 
-def fix_paid_filter(q, session):
-    """Функція для застосування фільтру 'Тільки оплачені'"""
-    # Фільтруємо замовлення, статус оплати яких 'оплачено' (id=1)
-    q = q.join(PaymentStatus, Order.payment_status_id == PaymentStatus.id)
-    q = q.filter(Order.payment_status_id == 1)
-    return q
+ def _get_calendar_style(self):
+     """
+     Повертає стиль для віджета календаря залежно від поточної теми.
+     """
+     if self.is_dark_theme:
+         return """
+             QCalendarWidget {
+                 background-color: #333333;
+                 color: white;
+             }
+             QCalendarWidget QToolButton {
+                 color: white;
+                 background-color: #444444;
+                 border: 1px solid #555555;
+                 border-radius: 4px;
+                 padding: 3px;
+                 font-size: 12pt;
+             }
+             QCalendarWidget QToolButton:hover {
+                 background-color: #555555;
+             }
+             QCalendarWidget QMenu {
+                 background-color: #444444;
+                 color: white;
+             }
+             QCalendarWidget QSpinBox {
+                 background-color: #444444;
+                 color: white;
+                 selection-background-color: #666666;
+                 selection-color: white;
+             }
+             QCalendarWidget QTableView {
+                 background-color: #333333;
+                 selection-background-color: #7851A9;
+                 selection-color: white;
+                 alternate-background-color: #383838;
+             }
+             QCalendarWidget QAbstractItemView:enabled {
+                 color: white;
+                 background-color: #333333;
+                 selection-background-color: #7851A9;
+                 selection-color: white;
+             }
+             QCalendarWidget QAbstractItemView:disabled {
+                 color: #666666;
+             }
+         """
+     else:
+         return """
+             QCalendarWidget {
+                 background-color: white;
+                 color: #333333;
+                 border: 1px solid #cccccc;
+             }
+             QCalendarWidget QToolButton {
+                 color: #333333;
+                 background-color: #f0f0f0;
+                 border: 1px solid #cccccc;
+                 border-radius: 4px;
+                 padding: 3px;
+                 font-size: 12pt;
+             }
+             QCalendarWidget QToolButton:hover {
+                 background-color: #e0e0e0;
+             }
+             QCalendarWidget QMenu {
+                 background-color: white;
+                 color: #333333;
+             }
+             QCalendarWidget QSpinBox {
+                 background-color: white;
+                 color: #333333;
+                 selection-background-color: #e0e0e0;
+                 selection-color: #333333;
+             }
+             QCalendarWidget QTableView {
+                 background-color: white;
+                 selection-background-color: #7851A9;
+                 selection-color: white;
+                 alternate-background-color: #f5f5f5;
+             }
+             QCalendarWidget QAbstractItemView:enabled {
+                 color: #333333;
+                 background-color: white;
+                 selection-background-color: #7851A9;
+                 selection-color: white;
+             }
+             QCalendarWidget QAbstractItemView:disabled {
+                 color: #aaaaaa;
+             }
+         """
 
-# Додаємо функції, які ми оголосили раніше
-def parse_google_sheets(self):
-    """Функція запускає парсинг Google Sheets у фоновому режимі"""
-    try:
-        # Отримуємо URL-адреси таблиць для парсингу
-        sheets_urls = [self.google_sheets_url_edit.text()]
-        
-        if not sheets_urls[0]:
-            self.show_error_message("Помилка", "Не вказана URL-адреса Google Sheets")
-            return
-            
-        # Запускаємо асинхронний парсинг
-        result = parsing_api.start_parsing(sheets_urls, force_process=False)
-        
-        if result["success"]:
-            # Показуємо повідомлення про успішний запуск
-            self.show_info_message("Парсинг запущено", result["message"])
-            
-            # Запускаємо фоновий потік для оновлення інтерфейсу під час парсингу
-            self.start_ui_update_thread()
-        else:
-            # Показуємо повідомлення про помилку
-            self.show_error_message("Помилка", result["message"])
-    
-    except Exception as e:
-        self.show_error_message("Помилка", f"Помилка при запуску парсингу: {str(e)}")
-        logger.error(f"Помилка при запуску парсингу: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+ def _on_date_selected(self, date, dialog):
+     """
+     Обробник вибору дати у календарі.
+     
+     :param date: Вибрана дата (QDate).
+     :param dialog: Діалогове вікно календаря.
+     """
+     self.selected_filter_date = date
+     self._update_calendar_button_state()
+     
+     # Закриваємо діалогове вікно
+     dialog.accept()
+     
+     # Застосовуємо фільтри з новою датою
+     asyncio.ensure_future(self.apply_orders_filters())
 
-def start_ui_update_thread(self):
-    """Запускає фоновий потік для оновлення інтерфейсу під час парсингу"""
-    # Створюємо елемент для відображення статусу парсингу, якщо його ще немає
-    if not hasattr(self, "parsing_status_widget"):
-        from PyQt5.QtWidgets import QLabel
-        self.parsing_status_widget = QLabel(self)
-        self.parsing_status_widget.setStyleSheet("background-color: #f8f9fa; padding: 10px; border-radius: 5px;")
-        self.parsing_status_widget.setOpenExternalLinks(True)
-        self.parsing_status_widget.setTextFormat(QtCore.Qt.RichText)
-        self.parsing_status_widget.setWordWrap(True)
-        
-        # Додаємо віджет статусу до інтерфейсу над таблицею замовлень
-        self.orders_tab_layout.insertWidget(0, self.parsing_status_widget)
-    
-    # Функція оновлення інтерфейсу
-    def update_ui():
-        try:
-            while True:
-                # Отримуємо поточний статус парсингу
-                status_html = parsing_api.get_status_html()
-                
-                # Оновлюємо віджет статусу в головному потоці
-                QtCore.QMetaObject.invokeMethod(
-                    self.parsing_status_widget,
-                    "setText",
-                    QtCore.Qt.QueuedConnection,
-                    QtCore.Q_ARG(str, status_html)
-                )
-                
-                # Оновлюємо таблицю замовлень, якщо парсинг виконується
-                status = parsing_api.get_status()
-                if status["is_running"]:
-                    # Оновлюємо таблицю замовлень кожні 5 секунд
-                    if status.get("processed_rows", 0) % 50 == 0:
-                        QtCore.QMetaObject.invokeMethod(
-                            self,
-                            "refresh_orders_table",
-                            QtCore.Qt.QueuedConnection
-                        )
-                else:
-                    # Якщо парсинг завершено, оновлюємо таблицю і виходимо з циклу
-                    if status.get("end_time"):
-                        QtCore.QMetaObject.invokeMethod(
-                            self,
-                            "refresh_orders_table",
-                            QtCore.Qt.QueuedConnection
-                        )
-                        
-                        # Якщо пройшло більше 10 секунд після завершення, виходимо з циклу
-                        if "end_time" in status and status["end_time"]:
-                            end_time = status["end_time"]
-                            elapsed_since_end = (datetime.now() - end_time).total_seconds()
-                            if elapsed_since_end > 10:
-                                break
-                
-                # Пауза перед наступним оновленням
-                time.sleep(1)
-                
-            # Приховуємо віджет статусу після завершення
-            QtCore.QMetaObject.invokeMethod(
-                self.parsing_status_widget,
-                "hide",
-                QtCore.Qt.QueuedConnection
-            )
-                
-        except Exception as e:
-            logger.error(f"Помилка в потоці оновлення інтерфейсу: {e}")
-    
-    # Запускаємо потік
-    ui_thread = threading.Thread(target=update_ui, daemon=True)
-    ui_thread.start()
-    
-    # Показуємо віджет статусу
-    self.parsing_status_widget.show()
+ def _on_date_cleared(self, dialog):
+     """
+     Обробник очищення вибраної дати.
+     
+     :param dialog: Діалогове вікно календаря.
+     """
+     self.selected_filter_date = None
+     self._update_calendar_button_state()
+     
+     # Закриваємо діалогове вікно
+     dialog.accept()
+     
+     # Застосовуємо фільтри без дати
+     asyncio.ensure_future(self.apply_orders_filters())
 
-# Замінюємо функцію оновлення таблиці замовлень, щоб використовувати безблокуючий метод
-def refresh_orders_table(self):
-    """Оновлює таблицю замовлень використовуючи безблокуючий метод під час парсингу"""
-    try:
-        # Перевіряємо, чи виконується парсинг
-        status = parsing_api.get_status()
-        
-        if status.get("is_running", False):
-            # Якщо парсинг виконується, використовуємо безблокуючий метод
-            orders = parsing_api.get_orders(
-                limit=100,  # Обмежуємо кількість замовлень для кращої продуктивності
-                filter_text=self.search_orders_edit.text() if self.search_orders_edit.text() else None
-            )
-            
-            # Очищаємо таблицю
-            self.orders_table.setRowCount(0)
-            
-            # Заповнюємо таблицю даними
-            for order in orders:
-                self.add_order_to_table(order)
-                
-            # Додаємо примітку, що дані можуть бути неповними
-            if not hasattr(self, "parsing_note_label"):
-                from PyQt5.QtWidgets import QLabel
-                self.parsing_note_label = QLabel("Примітка: під час парсингу відображаються останні 100 замовлень", self)
-                self.parsing_note_label.setStyleSheet("color: #6c757d; font-style: italic;")
-                self.orders_tab_layout.insertWidget(2, self.parsing_note_label)
-            
-            self.parsing_note_label.show()
-        else:
-            # Якщо парсинг не виконується, використовуємо стандартний метод
-            # Приховуємо примітку, якщо вона існує
-            if hasattr(self, "parsing_note_label") and self.parsing_note_label:
-                self.parsing_note_label.hide()
-            
-            # Оригінальний код оновлення таблиці
-            if hasattr(self, "_original_refresh_orders_table"):
-                self._original_refresh_orders_table()
-            else:
-                # Якщо оригінальна функція не збережена, використовуємо стандартний метод
-                # Тут можна додати базову реалізацію або викликати виключення
-                logger.error("Оригінальна функція оновлення таблиці не знайдена")
-    
-    except Exception as e:
-        logger.error(f"Помилка при оновленні таблиці замовлень: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+ def on_orders_selection_changed(self):
+     """Оновлює колір тексту в QLabel при виділенні рядка в таблиці замовлень"""
+     # Текст білого кольору для виділених рядків, звичайний колір для інших
+     selected_rows = set(index.row() for index in self.orders_table.selectedIndexes())
+     
+     for row in range(self.orders_table.rowCount()):
+         # Визначаємо, чи є рядок виділеним
+         is_selected = row in selected_rows
+         
+         # Для колонки з товарами (колонка 1)
+         label = self.orders_table.cellWidget(row, 1)
+         if label and isinstance(label, QLabel) and label.property("role") == "product_cell":
+             text_color = "white" if is_selected else ("white" if self.is_dark_theme else "black")
+             label.setStyleSheet(f"""
+                 QLabel {{
+                     padding: 0px 15px;
+                     margin: 0px;
+                     min-height: 38px;
+                     background-color: transparent;
+                     color: {text_color};
+                 }}
+             """)

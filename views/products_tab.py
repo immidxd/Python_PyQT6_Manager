@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QFont, QPixmap, QColor, QCursor, QIcon, QMouseEvent, QAction
 from PyQt6.QtCore import (
-   Qt, QTimer, QEvent, QEasingCurve, QPoint, pyqtSignal, QPropertyAnimation, QDate
+   Qt, QTimer, QEvent, QEasingCurve, QPoint, pyqtSignal, QPropertyAnimation, QDate, QMargins, QTime, QDateTime
 )
 
 import qtawesome as qta
@@ -382,6 +382,7 @@ class ProductsTab(QWidget):
        self.filter_button.clicked.connect(lambda: asyncio.ensure_future(self.apply_filters()))
        self.table.cellDoubleClicked.connect(self.show_cell_info)
        self.table.horizontalHeader().sectionClicked.connect(self.select_column)
+       self.table.itemSelectionChanged.connect(self.on_selection_changed)
 
        self.set_scroll_style()
 
@@ -413,7 +414,6 @@ class ProductsTab(QWidget):
        
        QScrollBar:vertical:hover {
            width: 8px;
-           transition: width 0.3s;
        }
        
        QScrollBar::handle:vertical {
@@ -449,7 +449,6 @@ class ProductsTab(QWidget):
        
        QScrollBar:horizontal:hover {
            height: 8px;
-           transition: height 0.3s;
        }
        
        QScrollBar::handle:horizontal {
@@ -488,7 +487,6 @@ class ProductsTab(QWidget):
        
        QScrollBar:vertical:hover {
            width: 8px;
-           transition: width 0.3s;
        }
        
        QScrollBar::handle:vertical {
@@ -524,7 +522,6 @@ class ProductsTab(QWidget):
        
        QScrollBar:horizontal:hover {
            height: 8px;
-           transition: height 0.3s;
        }
        
        QScrollBar::handle:horizontal {
@@ -580,7 +577,7 @@ class ProductsTab(QWidget):
        update_text_colors(self.parent_window, self.is_dark_theme)
        self.update_theme_icon_only()
        update_filter_counts(self)
-
+       
        # Логотип
        if self.is_dark_theme:
            logo_pixmap = QPixmap("style/images/icons/logo_dark.png")
@@ -593,12 +590,15 @@ class ProductsTab(QWidget):
        )
        if self.logo_label:
            self.logo_label.setPixmap(logo_pixmap)
-
+       
        self.update_page_buttons()
        
-       # Оновлюємо колір тексту в таблиці відповідно до вибраної теми
+       # Оновлюємо кольори тексту в таблиці
        if self.data_loaded and hasattr(self, 'table'):
            self.update_table_text_color()
+     
+       # Оновлюємо кольори тексту для QLabel в комірках таблиці
+       self.update_product_labels_color() 
 
    def update_theme_icon_only(self):
        from services.theme_service import update_theme_icon_for_button
@@ -1500,12 +1500,46 @@ class ProductsTab(QWidget):
 
        for row_num, product in enumerate(self.all_products[start_index:end_index]):
            try:
+               # Замінюємо QTableWidgetItem на QLabel з HTML-форматуванням для номера товару
                productnumber = product['productnumber'] or ""
                if productnumber.startswith("#"):
                    productnumber = productnumber[1:]
-               item_0 = QTableWidgetItem(productnumber)
-               item_0.setToolTip(productnumber)
-               self.table.setItem(row_num, 0, item_0)
+               
+               # Отримуємо кількість товару
+               quantity = product['quantity'] or 1
+               
+               # Створюємо QLabel з HTML-форматуванням, щоб показати кількість як надстроковий індекс
+               from PyQt6.QtWidgets import QLabel
+               number_label = QLabel(f"{productnumber}<sup>{quantity}</sup>")
+               number_label.setTextFormat(Qt.TextFormat.RichText)
+               number_label.setFont(QFont("Arial", 13))
+               
+               # Встановлюємо стиль з урахуванням поточної теми
+               text_color = "white" if self.is_dark_theme else "black"
+               number_label.setStyleSheet(f"""
+                   QLabel {{
+                       padding: 0px 15px;
+                       margin: 0px;
+                       min-height: 38px;
+                       background-color: transparent;
+                       color: {text_color};
+                   }}
+               """)
+               # Встановлюємо вертикальне центрування
+               number_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+               
+               # Скидаємо всі відступи та використовуємо лише властивість вирівнювання Qt
+               margins = QMargins(15, 0, 15, 0)  # Горизонтальні відступи по 15px, вертикальні - 0
+               number_label.setContentsMargins(margins)
+               
+               # Встановлюємо фіксовану висоту комірки
+               number_label.setFixedHeight(38)
+               
+               # Зберігаємо роль для подальшого оновлення
+               number_label.setProperty("role", "product_cell")
+               
+               # Встановлюємо QLabel в комірку таблиці замість QTableWidgetItem
+               self.table.setCellWidget(row_num, 0, number_label)
 
                clonednumbers = product['clonednumbers'] or ""
                item_1 = QTableWidgetItem(clonednumbers)
@@ -1589,20 +1623,30 @@ class ProductsTab(QWidget):
                item_14.setToolTip(meas_str)
                self.table.setItem(row_num, 14, item_14)
 
-               price_val = product['price']
-               price_str = ""
-               if price_val is not None:
-                   price_str = f"{price_val:.2f}".rstrip('0').rstrip('.')
+               price_value = product['price']
+               if price_value is not None:
+                   # Визначаємо, чи є число цілим
+                   if price_value == int(price_value):
+                       price_str = f"{int(price_value)}"
+                   else:
+                       price_str = f"{price_value}"
+               else:
+                   price_str = ""
                item_15 = QTableWidgetItem(price_str)
                item_15.setToolTip(price_str)
                self.table.setItem(row_num, 15, item_15)
 
-               old_val = product['oldprice']
-               old_str = ""
-               if old_val is not None:
-                   old_str = f"{old_val:.2f}".rstrip('0').rstrip('.')
-               item_16 = QTableWidgetItem(old_str)
-               item_16.setToolTip(old_str)
+               old_price_value = product['oldprice']
+               if old_price_value is not None:
+                   # Визначаємо, чи є число цілим
+                   if old_price_value == int(old_price_value):
+                       old_price_str = f"{int(old_price_value)}"
+                   else:
+                       old_price_str = f"{old_price_value}"
+               else:
+                   old_price_str = ""
+               item_16 = QTableWidgetItem(old_price_str)
+               item_16.setToolTip(old_price_str)
                self.table.setItem(row_num, 16, item_16)
 
                status_name = (product['statusname'] or "").capitalize()
@@ -1648,6 +1692,37 @@ class ProductsTab(QWidget):
                item = self.table.item(row, col)
                if item:
                    item.setForeground(text_color)
+     
+       # Також оновлюємо колір тексту для QLabel в комірках таблиці
+       self.update_product_labels_color()
+
+   def update_product_labels_color(self):
+       """Оновлює колір тексту для QLabel з номерами товарів при зміні теми"""
+       # Отримуємо виділені рядки
+       selected_rows = set(index.row() for index in self.table.selectedIndexes())
+       
+       # Проходимо по всіх комірках і оновлюємо стиль QLabel
+       for row in range(self.table.rowCount()):
+           label = self.table.cellWidget(row, 0)
+           if label and isinstance(label, QLabel) and label.property("role") == "product_cell":
+               # Визначаємо колір тексту - білий для виділених, залежний від теми для невиділених
+               is_selected = row in selected_rows
+               text_color = "white" if is_selected else ("white" if self.is_dark_theme else "black")
+               
+               label.setStyleSheet(f"""
+                   QLabel {{
+                       padding: 0px 15px;
+                       margin: 0px;
+                       min-height: 38px;
+                       background-color: transparent;
+                       color: {text_color};
+                   }}
+               """)
+               
+               # Скидаємо всі відступи та використовуємо лише властивість вирівнювання Qt
+               margins = QMargins(15, 0, 15, 0)
+               label.setContentsMargins(margins)
+               label.setFixedHeight(38)
 
    def adjust_table_columns(self):
        self.table.horizontalHeader().setStretchLastSection(False)
@@ -2023,96 +2098,149 @@ class ProductsTab(QWidget):
        QMessageBox.critical(self, "Помилка", f"Сталася помилка:\n{error_message}")
 
    def update_page_buttons(self):
-       for i in reversed(range(self.page_buttons_layout.count())):
-           w = self.page_buttons_layout.takeAt(i).widget()
-           if w:
-               w.setParent(None)
-
-       if self.total_pages < 1:
-           return
-
-       text_color = "#ffffff" if self.is_dark_theme else "#000000"
-       base_style = f"""
-           QPushButton {{
-               border:none;
-               background:transparent;
-               color:{text_color};
-               padding:5px;
-           }}
-           QPushButton:hover {{
-               background-color:rgba(0,0,0,0.1);
-               border-radius:3px;
-           }}
        """
-
-       prev_btn = QPushButton("◀")
-       prev_btn.setFont(QFont("Arial", 13))
-       prev_btn.setFixedHeight(35)
-       prev_btn.setStyleSheet(base_style)
-       prev_btn.setEnabled(self.current_page > 1)
-       prev_btn.clicked.connect(lambda: self.go_to_page(self.current_page - 1))
-       self.page_buttons_layout.addWidget(prev_btn)
-
-       max_buttons = 7
-       start_page = max(1, self.current_page - 3)
-       end_page = min(start_page + max_buttons - 1, self.total_pages)
-       if end_page - start_page < max_buttons - 1:
-           start_page = max(1, end_page - max_buttons + 1)
-
-       if start_page > 1:
-           first_btn = QPushButton("1")
-           first_btn.setFont(QFont("Arial", 13))
-           first_btn.setFixedHeight(35)
-           first_btn.setStyleSheet(base_style)
-           first_btn.clicked.connect(lambda: self.go_to_page(1))
-           self.page_buttons_layout.addWidget(first_btn)
-           if start_page > 2:
-               ellips = QLabel("...")
-               ellips.setFont(QFont("Arial", 13))
-               ellips.setStyleSheet(f"color:{text_color};")
-               self.page_buttons_layout.addWidget(ellips)
-
-       for p in range(start_page, end_page + 1):
-           btn = QPushButton(str(p))
-           btn.setFont(QFont("Arial", 13))
-           btn.setFixedHeight(35)
-           if p == self.current_page:
-               btn.setStyleSheet(f"""
-                   QPushButton {{
-                       font-weight:bold;
-                       border:none;
-                       background:rgba(0,0,0,0.1);
-                       padding:5px;
-                       border-radius:3px;
-                       color:{text_color};
-                   }}
-               """)
+       Оновлює кнопки пагінації на основі поточної сторінки та загальної кількості сторінок.
+       """
+       try:
+           # Очищаємо поточні кнопки
+           for i in reversed(range(self.page_buttons_layout.count())):
+               w = self.page_buttons_layout.takeAt(i).widget()
+               if w:
+                   w.setParent(None)
+                   
+           # Якщо сторінок менше 2, не показуємо пагінацію
+           if self.total_pages < 2:
+               return
+           
+           # Ультрамінімалістичний стиль пагінації
+           if self.is_dark_theme:
+               btn_style = """
+                   QPushButton {
+                       background-color: transparent;
+                       color: #777777;
+                       border: none;
+                       font-size: 10pt;
+                       min-width: 24px;
+                       max-width: 24px;
+                       min-height: 24px;
+                       max-height: 24px;
+                       margin: 0px;
+                       padding: 0px;
+                   }
+                   QPushButton:hover {
+                       color: #ffffff;
+                   }
+                   QPushButton:disabled {
+                       color: #444444;
+                   }
+               """
+               active_btn_style = """
+                   QPushButton {
+                       background-color: #7851A9;
+                       color: white;
+                       border: none;
+                       border-radius: 2px;
+                       font-size: 10pt;
+                       font-weight: bold;
+                       min-width: 24px;
+                       max-width: 24px;
+                       min-height: 24px;
+                       max-height: 24px;
+                       margin: 0px;
+                       padding: 0px;
+                   }
+               """
            else:
-               btn.setStyleSheet(base_style)
-           btn.clicked.connect(lambda _, page=p: self.go_to_page(page))
-           self.page_buttons_layout.addWidget(btn)
-
-       if end_page < self.total_pages:
-           if end_page < self.total_pages - 1:
-               ellips2 = QLabel("...")
-               ellips2.setFont(QFont("Arial", 13))
-               ellips2.setStyleSheet(f"color:{text_color};")
-               self.page_buttons_layout.addWidget(ellips2)
-
-           last_btn = QPushButton(str(self.total_pages))
-           last_btn.setFont(QFont("Arial", 13))
-           last_btn.setFixedHeight(35)
-           last_btn.setStyleSheet(base_style)
-           last_btn.clicked.connect(lambda: self.go_to_page(self.total_pages))
-           self.page_buttons_layout.addWidget(last_btn)
-
-       next_btn = QPushButton("▶")
-       next_btn.setFont(QFont("Arial", 13))
-       next_btn.setFixedHeight(35)
-       next_btn.setStyleSheet(base_style)
-       next_btn.setEnabled(self.current_page < self.total_pages)
-       next_btn.clicked.connect(lambda: self.go_to_page(self.current_page + 1))
-       self.page_buttons_layout.addWidget(next_btn)
+               btn_style = """
+                   QPushButton {
+                       background-color: transparent;
+                       color: #777777;
+                       border: none;
+                       font-size: 10pt;
+                       min-width: 24px;
+                       max-width: 24px;
+                       min-height: 24px;
+                       max-height: 24px;
+                       margin: 0px;
+                       padding: 0px;
+                   }
+                   QPushButton:hover {
+                       color: #333333;
+                   }
+                   QPushButton:disabled {
+                       color: #cccccc;
+                   }
+               """
+               active_btn_style = """
+                   QPushButton {
+                       background-color: #7851A9;
+                       color: white;
+                       border: none;
+                       border-radius: 2px;
+                       font-size: 10pt;
+                       font-weight: bold;
+                       min-width: 24px;
+                       max-width: 24px;
+                       min-height: 24px;
+                       max-height: 24px;
+                       margin: 0px;
+                       padding: 0px;
+                   }
+               """
+           
+           # Кнопка "на першу сторінку"
+           first_button = QPushButton("«")
+           first_button.setStyleSheet(btn_style)
+           first_button.setEnabled(self.current_page > 1)
+           first_button.clicked.connect(lambda: self.go_to_page(1))
+           self.page_buttons_layout.addWidget(first_button)
+           
+           # Кнопка "назад"
+           prev_button = QPushButton("‹")
+           prev_button.setStyleSheet(btn_style)
+           prev_button.setEnabled(self.current_page > 1)
+           prev_button.clicked.connect(lambda: self.go_to_page(self.current_page - 1))
+           self.page_buttons_layout.addWidget(prev_button)
+           
+           # Визначаємо діапазон сторінок для відображення
+           # Показуємо максимально 5 сторінок: поточну, 2 до і 2 після
+           start_page = max(1, self.current_page - 2)
+           end_page = min(self.total_pages, start_page + 4)
+           
+           # Якщо показуємо менше 5 сторінок в кінці, то показуємо більше на початку
+           if end_page - start_page < 4:
+               start_page = max(1, end_page - 4)
+           
+           # Додаємо кнопки для кожної сторінки в діапазоні
+           for page in range(start_page, end_page + 1):
+               page_button = QPushButton(str(page))
+               
+               # Виділяємо поточну сторінку
+               if page == self.current_page:
+                   page_button.setStyleSheet(active_btn_style)
+               else:
+                   page_button.setStyleSheet(btn_style)
+               
+               page_button.clicked.connect(lambda _, p=page: self.go_to_page(p))
+               self.page_buttons_layout.addWidget(page_button)
+           
+           # Кнопка "вперед"
+           next_button = QPushButton("›")
+           next_button.setStyleSheet(btn_style)
+           next_button.setEnabled(self.current_page < self.total_pages)
+           next_button.clicked.connect(lambda: self.go_to_page(self.current_page + 1))
+           self.page_buttons_layout.addWidget(next_button)
+           
+           # Кнопка "на останню сторінку"
+           last_button = QPushButton("»")
+           last_button.setStyleSheet(btn_style)
+           last_button.setEnabled(self.current_page < self.total_pages)
+           last_button.clicked.connect(lambda: self.go_to_page(self.total_pages))
+           self.page_buttons_layout.addWidget(last_button)
+           
+       except Exception as e:
+           logging.error(f"Помилка при оновленні кнопок пагінації: {e}")
+           logging.error(traceback.format_exc())
 
    def go_to_page(self, page):
        if page != self.current_page and 1 <= page <= self.total_pages:
@@ -2197,43 +2325,102 @@ class ProductsTab(QWidget):
    def add_product_to_table(self, product):
        """Додає продукт в таблицю (для використання з асинхронним методом)"""
        try:
-           row_position = self.products_table.rowCount()
-           self.products_table.insertRow(row_position)
+           row_position = self.table.rowCount()
+           self.table.insertRow(row_position)
            
            # Заповнюємо комірки на основі структури даних, отриманої з API
            # ID
            id_item = QTableWidgetItem(str(product.get('id', '')))
-           self.products_table.setItem(row_position, 0, id_item)
+           self.table.setItem(row_position, 0, id_item)
            
            # Номер продукту
-           number_item = QTableWidgetItem(product.get('product_number', ''))
-           self.products_table.setItem(row_position, 1, number_item)
+           from PyQt6.QtWidgets import QLabel
+           number_label = QLabel(product.get('product_number', ''))
+           number_label.setFont(QFont("Arial", 13))
+           
+           # Встановлюємо стиль з урахуванням поточної теми
+           text_color = "white" if self.is_dark_theme else "black"
+           number_label.setStyleSheet(f"""
+               QLabel {{
+                   padding: 0px 15px;
+                   margin: 0px;
+                   min-height: 38px;
+                   background-color: transparent;
+                   color: {text_color};
+               }}
+           """)
+           number_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+           number_label.setProperty("role", "product_cell")
+           
+           # Встановлюємо QLabel в комірку таблиці замість QTableWidgetItem
+           self.table.setCellWidget(row_position, 1, number_label)
            
            # Клони
            clones_item = QTableWidgetItem(product.get('clones', ''))
-           self.products_table.setItem(row_position, 2, clones_item)
+           self.table.setItem(row_position, 2, clones_item)
            
            # Ціна
-           price_item = QTableWidgetItem(f"{product.get('price', 0):.2f}" if product.get('price') is not None else "")
-           self.products_table.setItem(row_position, 3, price_item)
+           price_value = product.get('price')
+           if price_value is not None:
+               # Визначаємо, чи є число цілим
+               if price_value == int(price_value):
+                   price_str = f"{int(price_value)}"
+               else:
+                   price_str = f"{price_value}"
+           else:
+               price_str = ""
+           price_item = QTableWidgetItem(price_str)
+           self.table.setItem(row_position, 3, price_item)
            
            # Стара ціна
-           old_price_item = QTableWidgetItem(f"{product.get('old_price', 0):.2f}" if product.get('old_price') is not None else "")
-           self.products_table.setItem(row_position, 4, old_price_item)
+           old_price_value = product.get('old_price')
+           if old_price_value is not None:
+               # Визначаємо, чи є число цілим
+               if old_price_value == int(old_price_value):
+                   old_price_str = f"{int(old_price_value)}"
+               else:
+                   old_price_str = f"{old_price_value}"
+           else:
+               old_price_str = ""
+           old_price_item = QTableWidgetItem(old_price_str)
+           self.table.setItem(row_position, 4, old_price_item)
            
            # Статус
            status_item = QTableWidgetItem(product.get('status_name', ''))
-           self.products_table.setItem(row_position, 5, status_item)
+           self.table.setItem(row_position, 5, status_item)
            
            # Дата створення
            created_at_item = QTableWidgetItem(product.get('created_at', ''))
-           self.products_table.setItem(row_position, 6, created_at_item)
+           self.table.setItem(row_position, 6, created_at_item)
            
            # Дата оновлення
            updated_at_item = QTableWidgetItem(product.get('updated_at', ''))
-           self.products_table.setItem(row_position, 7, updated_at_item)
+           self.table.setItem(row_position, 7, updated_at_item)
            
        except Exception as e:
            logger.error(f"Помилка при додаванні продукту до таблиці: {e}")
            import traceback
            logger.error(traceback.format_exc())
+
+   def on_selection_changed(self):
+       """Оновлює колір тексту в QLabel при виділенні рядка"""
+       # Текст білого кольору для виділених рядків, звичайний колір для інших
+       selected_rows = set(index.row() for index in self.table.selectedIndexes())
+       
+       for row in range(self.table.rowCount()):
+           # Визначаємо, чи є рядок виділеним
+           is_selected = row in selected_rows
+           
+           # Для колонки з номером товару (колонка 0)
+           label = self.table.cellWidget(row, 0)
+           if label and isinstance(label, QLabel) and label.property("role") == "product_cell":
+               text_color = "white" if is_selected else ("white" if self.is_dark_theme else "black")
+               label.setStyleSheet(f"""
+                   QLabel {{
+                       padding: 0px 15px;
+                       margin: 0px;
+                       min-height: 38px;
+                       background-color: transparent;
+                       color: {text_color};
+                   }}
+               """)
