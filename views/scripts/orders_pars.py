@@ -3159,3 +3159,21 @@ def import_data_async(sheet_links, force_process=False):
         update_parsing_status("is_running", False)
         update_parsing_status("end_time", datetime.now())
         update_parsing_status("last_error", str(e))
+
+# -------------------------------------------------------
+#   Підключення до PostgreSQL з рівнем ізоляції
+# -------------------------------------------------------
+def connect_to_db_with_isolation(isolation_level):
+   try:
+       connection = psycopg2.connect(
+           host=DB_HOST,
+           port=DB_PORT,
+           database=DB_NAME,
+           user=DB_USER,
+           password=DB_PASSWORD
+       )
+       connection.set_isolation_level(isolation_level)
+       return connection
+   except psycopg2.Error as e:
+       logger.error(f"Помилка підключення до бази даних з ізоляцією {isolation_level}: {e}")
+       return None

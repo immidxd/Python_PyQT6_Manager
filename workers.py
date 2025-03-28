@@ -460,6 +460,26 @@ class OrderParsingWorker(QObject):
         self.logger = logging.getLogger('OrderParsingWorker')
         self.logger.info(f"Ініціалізація OrderParsingWorker з force_process={force_process}")
         
+    def parse_orders(self):
+        """
+        Метод для парсингу замовлень, який викликається з orders_tab.py.
+        Запускає метод run і повертає результат обробки.
+        
+        Returns:
+            bool: True, якщо парсинг завершився успішно, False у випадку помилки.
+        """
+        try:
+            self.logger.info("Початок parse_orders()")
+            # Запускаємо основний метод обробки замовлень
+            self.run()
+            self.logger.info("Завершення parse_orders()")
+            return True
+        except Exception as e:
+            self.logger.error(f"Помилка в parse_orders: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
+            return False
+        
     def show_update_type_dialog(self):
         """
         Показує діалогове вікно для вибору типу оновлення бази даних.
@@ -1283,7 +1303,32 @@ class UniversalParsingWorker(QObject):
         """Ініціалізує воркера і встановлює початкові значення змінних."""
         super().__init__()
         self._is_running = True
+        self.force_process = False  # Параметр для повного оновлення
         logging.debug("UniversalParsingWorker створено")
+    
+    def show_update_type_dialog(self):
+        """
+        Показує діалогове вікно для вибору типу оновлення бази даних.
+        Повертає True, якщо користувач вибрав повне оновлення, False для стандартного, None якщо скасував.
+        """
+        # Переконуємося, що є активне вікно програми
+        app = QApplication.instance()
+        if not app:
+            logging.warning("QApplication екземпляр не знайдено, діалог не може бути показаний")
+            return self.force_process
+            
+        logging.info("Відображення діалогу вибору типу оновлення")
+        dialog = UpdateTypeDialog()
+        result = dialog.exec()
+        
+        if result == QDialog.DialogCode.Accepted:
+            selection = dialog.is_full_update_selected()
+            logging.info(f"Користувач вибрав: {'Повне оновлення' if selection else 'Стандартне оновлення'}")
+            return selection
+        else:
+            # Користувач скасував, припиняємо операцію
+            logging.info("Користувач скасував діалог вибору типу оновлення")
+            return None
 
     def run(self):
         """
@@ -1298,6 +1343,11 @@ class UniversalParsingWorker(QObject):
         try:
             # Активуємо індетермінований прогрес-бар
             self.progress.emit(None)
+            
+            # Виводимо інформацію про режим оновлення
+            mode_text = "ПОВНИЙ" if self.force_process else "СТАНДАРТНИЙ"
+            logging.info(f"Запуск універсального парсингу в режимі: {mode_text}")
+            self.status_update.emit(f"Режим оновлення: {mode_text}")
             
             # ПЕРША ФАЗА: ПАРСИНГ ТОВАРІВ
             self.status_update.emit("Підготовка до оновлення товарів")
@@ -1332,7 +1382,7 @@ class UniversalParsingWorker(QObject):
             logging.info(f"Знайдено скрипт товарів: {products_script_path}")
             
             # Сповіщаємо користувача
-            self.status_update.emit("Оновлення товарів")
+            self.status_update.emit("Початок оновлення товарів")
             
             # Запускаємо скрипт товарів
             command = [sys.executable, products_script_path]
@@ -1345,9 +1395,51 @@ class UniversalParsingWorker(QObject):
             )
             
             # Очікуємо на завершення процесу з обробкою подій Qt
+            current_status = ""
             while process.poll() is None and self._is_running:
                 # Обробляємо події інтерфейсу, щоб уникнути зависання
                 QCoreApplication.processEvents()
+                
+                # Читаємо вивід скрипта для відображення статусів
+                output_line = process.stdout.readline().strip()
+                if output_line:
+                    # Шукаємо інформаційні повідомлення про обробку аркушів у виводі
+                    if "Обробка:" in output_line:
+                        sheet_name = output_line.split("Обробка:", 1)[1].strip()
+                        status_msg = f"Оновлення товарів: обробка аркуша {sheet_name}"
+                        if status_msg != current_status:
+                            current_status = status_msg
+                            self.status_update.emit(status_msg)
+                            logging.info(status_msg)
+                    # Шукаємо інформацію про запуск orders_pars.py
+                    elif "Запускаємо orders_pars.py" in output_line:
+                        status_msg = "Завершення оновлення товарів, підготовка до оновлення замовлень"
+                        self.status_update.emit(status_msg)
+                        logging.info(status_msg)
+                    # Додаємо інформацію про обробку даних
+                    elif "Документ:" in output_line:
+                        document_name = output_line.split("Документ:", 1)[1].strip()
+                        status_msg = f"Оновлення товарів: документ {document_name}"
+                        if status_msg != current_status:
+                            current_status = status_msg
+                            self.status_update.emit(status_msg)
+                            logging.info(status_msg)
+                    # Логуємо інформацію про пропуск аркушів
+                    elif "Пропуск" in output_line and "Постачальники" not in output_line:
+                        sheet_name = output_line.split("Пропуск", 1)[1].strip().replace("'", "")
+                        status_msg = f"Оновлення товарів: пропуск аркуша {sheet_name}"
+                        if status_msg != current_status:
+                            current_status = status_msg
+                            self.status_update.emit(status_msg)
+                            logging.info(status_msg)
+                
+                # Перевіряємо помилки
+                error_line = process.stderr.readline().strip()
+                if error_line:
+                    logging.error(f"STDERR from products script: {error_line}")
+                    if "Помилка" in error_line:
+                        self.status_update.emit(f"Помилка оновлення товарів: {error_line}")
+                
                 # Коротка пауза для зменшення навантаження на CPU
                 time.sleep(0.05)
             
@@ -1419,8 +1511,12 @@ class UniversalParsingWorker(QObject):
             # Сповіщаємо користувача
             self.status_update.emit("Оновлення замовлень")
             
-            # Запускаємо скрипт замовлень
+            # Запускаємо скрипт замовлень з параметром force, якщо потрібно
             command = [sys.executable, orders_script_path]
+            if self.force_process:
+                command.append("--force")
+                logging.info("Запуск orders_pars.py з параметром --force (повне оновлення)")
+            
             process = subprocess.Popen(
                 command,
                 stdout=subprocess.PIPE, 
@@ -1430,9 +1526,51 @@ class UniversalParsingWorker(QObject):
             )
             
             # Очікуємо на завершення процесу з обробкою подій Qt
+            current_status = ""
             while process.poll() is None and self._is_running:
                 # Обробляємо події інтерфейсу, щоб уникнути зависання
                 QCoreApplication.processEvents()
+                
+                # Читаємо вивід скрипта для відображення статусів
+                output_line = process.stdout.readline().strip()
+                if output_line:
+                    # Шукаємо інформаційні повідомлення про обробку аркушів у виводі
+                    if "Обробка:" in output_line:
+                        sheet_name = output_line.split("Обробка:", 1)[1].strip()
+                        status_msg = f"Оновлення замовлень: обробка аркуша {sheet_name}"
+                        if status_msg != current_status:
+                            current_status = status_msg
+                            self.status_update.emit(status_msg)
+                            logging.info(status_msg)
+                    # Шукаємо інформацію про запуск orders_pars.py
+                    elif "Запускаємо orders_pars.py" in output_line:
+                        status_msg = "Завершення оновлення замовлень, підготовка до оновлення товарів"
+                        self.status_update.emit(status_msg)
+                        logging.info(status_msg)
+                    # Додаємо інформацію про обробку даних
+                    elif "Документ:" in output_line:
+                        document_name = output_line.split("Документ:", 1)[1].strip()
+                        status_msg = f"Оновлення замовлень: документ {document_name}"
+                        if status_msg != current_status:
+                            current_status = status_msg
+                            self.status_update.emit(status_msg)
+                            logging.info(status_msg)
+                    # Логуємо інформацію про пропуск аркушів
+                    elif "Пропуск" in output_line and "Постачальники" not in output_line:
+                        sheet_name = output_line.split("Пропуск", 1)[1].strip().replace("'", "")
+                        status_msg = f"Оновлення замовлень: пропуск аркуша {sheet_name}"
+                        if status_msg != current_status:
+                            current_status = status_msg
+                            self.status_update.emit(status_msg)
+                            logging.info(status_msg)
+                
+                # Перевіряємо помилки
+                error_line = process.stderr.readline().strip()
+                if error_line:
+                    logging.error(f"STDERR from orders script: {error_line}")
+                    if "Помилка" in error_line:
+                        self.status_update.emit(f"Помилка оновлення замовлень: {error_line}")
+                
                 # Коротка пауза для зменшення навантаження на CPU
                 time.sleep(0.05)
             

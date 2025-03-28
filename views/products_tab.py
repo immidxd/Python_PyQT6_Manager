@@ -14,11 +14,13 @@ from PyQt6.QtWidgets import (
    QSpinBox, QPushButton, QTableWidget, QSizePolicy, QAbstractScrollArea,
    QMessageBox, QHeaderView, QTableWidgetItem, QAbstractItemView, 
    QListWidget, QListWidgetItem, QGraphicsOpacityEffect, QGroupBox,
-   QGraphicsDropShadowEffect, QComboBox, QScrollArea, QSpacerItem, QMenu
+   QGraphicsDropShadowEffect, QComboBox, QScrollArea, QSpacerItem, QMenu,
+   QStyledItemDelegate, QStyle, QApplication, QCalendarWidget, QDialog
 )
 from PyQt6.QtGui import QFont, QPixmap, QColor, QCursor, QIcon, QMouseEvent, QAction
 from PyQt6.QtCore import (
-   Qt, QTimer, QEvent, QEasingCurve, QPoint, pyqtSignal, QPropertyAnimation, QDate, QMargins, QTime, QDateTime
+   Qt, QTimer, QEvent, QEasingCurve, QPoint, pyqtSignal, QPropertyAnimation, QDate, QMargins, QTime, QDateTime,
+   QRect, QSize, QMargins, pyqtSignal
 )
 
 import qtawesome as qta
@@ -263,6 +265,10 @@ class ProductsTab(QWidget):
        self.table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
        self.table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
        self.table.horizontalHeader().setFixedHeight(35)
+       
+       # Додаємо делегат для першої колонки
+       self.number_delegate = NumberColumnDelegate(self.table, self.is_dark_theme)
+       self.table.setItemDelegateForColumn(0, self.number_delegate)
 
        for idx in self.optional_columns_indices:
            self.table.setColumnHidden(idx, True)
@@ -599,6 +605,10 @@ class ProductsTab(QWidget):
      
        # Оновлюємо кольори тексту для QLabel в комірках таблиці
        self.update_product_labels_color() 
+       
+       # Оновлюємо стан делегата з новою темою
+       if hasattr(self, 'number_delegate'):
+           self.number_delegate.setDarkTheme(is_dark)
 
    def update_theme_icon_only(self):
        from services.theme_service import update_theme_icon_for_button
@@ -1500,7 +1510,7 @@ class ProductsTab(QWidget):
 
        for row_num, product in enumerate(self.all_products[start_index:end_index]):
            try:
-               # Замінюємо QTableWidgetItem на QLabel з HTML-форматуванням для номера товару
+               # Замість QLabel використовуємо QTableWidgetItem з правильними даними для делегата
                productnumber = product['productnumber'] or ""
                if productnumber.startswith("#"):
                    productnumber = productnumber[1:]
@@ -1508,38 +1518,10 @@ class ProductsTab(QWidget):
                # Отримуємо кількість товару
                quantity = product['quantity'] or 1
                
-               # Створюємо QLabel з HTML-форматуванням, щоб показати кількість як надстроковий індекс
-               from PyQt6.QtWidgets import QLabel
-               number_label = QLabel(f"{productnumber}<sup>{quantity}</sup>")
-               number_label.setTextFormat(Qt.TextFormat.RichText)
-               number_label.setFont(QFont("Arial", 13))
-               
-               # Встановлюємо стиль з урахуванням поточної теми
-               text_color = "white" if self.is_dark_theme else "black"
-               number_label.setStyleSheet(f"""
-                   QLabel {{
-                       padding: 0px 15px;
-                       margin: 0px;
-                       min-height: 38px;
-                       background-color: transparent;
-                       color: {text_color};
-                   }}
-               """)
-               # Встановлюємо вертикальне центрування
-               number_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
-               
-               # Скидаємо всі відступи та використовуємо лише властивість вирівнювання Qt
-               margins = QMargins(15, 0, 15, 0)  # Горизонтальні відступи по 15px, вертикальні - 0
-               number_label.setContentsMargins(margins)
-               
-               # Встановлюємо фіксовану висоту комірки
-               number_label.setFixedHeight(38)
-               
-               # Зберігаємо роль для подальшого оновлення
-               number_label.setProperty("role", "product_cell")
-               
-               # Встановлюємо QLabel в комірку таблиці замість QTableWidgetItem
-               self.table.setCellWidget(row_num, 0, number_label)
+               # Створюємо звичайний QTableWidgetItem з текстом, який буде оброблений делегатом
+               item_0 = QTableWidgetItem(f"{productnumber}<sup>{quantity}</sup>")
+               item_0.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+               self.table.setItem(row_num, 0, item_0)
 
                clonednumbers = product['clonednumbers'] or ""
                item_1 = QTableWidgetItem(clonednumbers)
@@ -1748,7 +1730,15 @@ class ProductsTab(QWidget):
        self.table.updateGeometry()
        self.table.viewport().update()
 
-   async def reset_filters(self):
+   async def reset_filters(self, keep_search=False):
+       """
+       Скидає всі фільтри та оновлює таблицю
+       
+       :param keep_search: Якщо True, зберігає поточний пошуковий запит
+       """
+       # Зберігаємо пошуковий запит, якщо потрібно
+       search_text = self.search_bar.text() if keep_search else ""
+       
        self.search_bar.clear()
        for checkbox in (
            self.brand_checkboxes + self.gender_checkboxes +
@@ -1822,6 +1812,11 @@ class ProductsTab(QWidget):
 
        update_filter_counts(self)
        self.update_slider_locks()
+       
+       # Відновлюємо пошуковий запит, якщо потрібно
+       if keep_search and search_text:
+           self.search_bar.setText(search_text)
+           
        await self.apply_filters()
 
    def update_price_spinboxes(self):
@@ -1984,27 +1979,31 @@ class ProductsTab(QWidget):
                return
 
            menu = QMenu(self)
+           # Отримуємо дані про продукт
+           status_item = self.table.item(row, 17)  # колонка status
+           product_item = self.table.item(row, 0)  # колонка productnumber
+           
+           if not status_item or not product_item:
+               return
+               
+           st_text = status_item.text().strip().lower() if status_item.text() else ""
+           pnum = product_item.text().strip() if product_item.text() else ""
+           
            # Опція «Показати в замовленні» (тільки якщо продано)
-           try:
-               status_item = self.table.item(row, 17)  # колонка status
-               product_item = self.table.item(row, 0)  # колонка productnumber
-               if status_item and product_item:
-                   st_text = status_item.text().strip().lower() if status_item.text() else ""
-                   pnum = product_item.text().strip() if product_item.text() else ""
-                   if st_text == "продано":
-                       show_in_orders_action = QAction("Показати в замовленні", self)
-                       show_in_orders_action.triggered.connect(lambda checked=False, pn=pnum: self.show_in_orders(pn))
-                       menu.addAction(show_in_orders_action)
-           except Exception as e:
-               logging.error(f"Помилка при додаванні опції 'Показати в замовленні': {e}")
-
-           # Опція «Видалити»
-           try:
-               delete_action = QAction("Видалити", self)
-               delete_action.triggered.connect(lambda checked=False, r=row: self.delete_product(r))
-               menu.addAction(delete_action)
-           except Exception as e:
-               logging.error(f"Помилка при додаванні опції 'Видалити': {e}")
+           if st_text == "продано":
+               show_in_orders_action = QAction("Показати в замовленні", self)
+               show_in_orders_action.triggered.connect(lambda checked=False, pn=pnum: self.show_in_orders(pn))
+               menu.addAction(show_in_orders_action)
+           
+           # Опція «Показати в Google Sheets» (для всіх товарів)
+           show_in_sheets_action = QAction("Показати в Google Sheets", self)
+           show_in_sheets_action.triggered.connect(lambda checked=False, pn=pnum: self.show_in_google_sheets(pn))
+           menu.addAction(show_in_sheets_action)
+           
+           # Опція «Видалити» (для всіх товарів)
+           delete_action = QAction("Видалити", self)
+           delete_action.triggered.connect(lambda checked=False, r=row: self.delete_product(r))
+           menu.addAction(delete_action)
 
            # Використовуємо exec_ замість exec для сумісності з новішими версіями PyQt
            try:
@@ -2031,6 +2030,18 @@ class ProductsTab(QWidget):
        except Exception as e:
            logging.error(f"Помилка при переході до замовлення: {e}")
            QMessageBox.warning(self, "Помилка", f"Не вдалося показати продукт у замовленнях: {str(e)}")
+           
+   def show_in_google_sheets(self, product_number):
+       try:
+           if not product_number:
+               logging.warning("Спроба показати порожній номер продукту в Google Sheets")
+               return
+               
+           # TODO: Реалізувати логіку відкриття Google Sheets з товаром
+           QMessageBox.information(self, "Google Sheets", f"Відкриття продукту {product_number} в Google Sheets (функція в розробці)")
+       except Exception as e:
+           logging.error(f"Помилка при відкритті Google Sheets: {e}")
+           QMessageBox.warning(self, "Помилка", f"Не вдалося відкрити Google Sheets: {str(e)}")
 
    def delete_product(self, row):
        item = self.table.item(row, 0)
@@ -2424,3 +2435,221 @@ class ProductsTab(QWidget):
                        color: {text_color};
                    }}
                """)
+
+   async def show_products_for_order(self, order_id):
+       """
+       Фільтрує таблицю товарів для відображення товарів конкретного замовлення
+       і підсвічує їх фіолетовою рамкою
+       
+       :param order_id: ID замовлення
+       """
+       try:
+           if not order_id:
+               logging.warning("Спроба показати товари для пустого ID замовлення")
+               return
+               
+           logging.info(f"Пошук товарів для замовлення #{order_id}")
+           
+           # Очищаємо поточні фільтри
+           await self.reset_filters()
+           
+           # Отримуємо список номерів товарів для замовлення з бази даних
+           product_numbers = await self._get_product_numbers_for_order(order_id)
+           
+           if not product_numbers:
+               QMessageBox.information(self, "Інформація", f"В замовленні #{order_id} не знайдено товарів")
+               return
+               
+           # Встановлюємо фільтр по знайдених номерах товарів
+           # Використовуємо оператор OR для відображення всіх товарів з замовлення
+           search_text = " OR ".join(product_numbers)
+           self.search_bar.setText(search_text)
+           
+           # Оновлюємо таблицю з новим фільтром
+           await self.apply_filters()
+           
+           # Чекаємо завершення завантаження даних
+           await asyncio.sleep(0.3)
+           
+           # Підсвічуємо знайдені товари фіолетовою рамкою
+           self._highlight_products(product_numbers)
+           
+           # Показуємо інформаційне повідомлення
+           self.set_status_message(f"Відображено товари з замовлення #{order_id}", 5000)
+           
+       except Exception as e:
+           logging.error(f"Помилка при показі товарів для замовлення: {e}")
+           QMessageBox.warning(self, "Помилка", f"Не вдалося показати товари для замовлення: {str(e)}")
+
+   async def _get_product_numbers_for_order(self, order_id):
+       """
+       Отримує список номерів товарів для вказаного замовлення
+       
+       :param order_id: ID замовлення
+       :return: Список номерів товарів
+       """
+       try:
+           from db import connect_to_db
+           
+           def blocking_query():
+               conn = connect_to_db()
+               cursor = conn.cursor()
+               
+               cursor.execute("""
+                   SELECT p.productnumber
+                   FROM products p
+                   JOIN order_details od ON p.id = od.product_id
+                   WHERE od.order_id = %s
+               """, (order_id,))
+               
+               results = cursor.fetchall()
+               cursor.close()
+               conn.close()
+               
+               return [row[0] for row in results if row[0]]
+               
+           return await asyncio.to_thread(blocking_query)
+       except Exception as e:
+           logging.error(f"Помилка при отриманні товарів замовлення: {e}")
+           return []
+
+   def _highlight_products(self, product_numbers):
+       """
+       Підсвічує рядки товарів з вказаними номерами
+       
+       :param product_numbers: Список номерів товарів для підсвічування
+       """
+       try:
+           # Фіолетовий колір для підсвічування (аналогічно корпоративному кольору)
+           highlight_color = QColor("#7851A9")
+           
+           # Скидаємо попереднє підсвічування
+           for row in range(self.table.rowCount()):
+               for col in range(self.table.columnCount()):
+                   item = self.table.item(row, col)
+                   if item:
+                       item.setBackground(QColor("transparent"))
+           
+           # Шукаємо і підсвічуємо потрібні товари
+           highlighted_rows = []
+           for row in range(self.table.rowCount()):
+               product_item = self.table.item(row, 0)  # колонка productnumber
+               if not product_item:
+                   continue
+                   
+               product_number = product_item.text().strip()
+               if product_number in product_numbers:
+                   highlighted_rows.append(row)
+                   
+                   # Встановлюємо стиль підсвічування (фіолетова рамка)
+                   for col in range(self.table.columnCount()):
+                       item = self.table.item(row, col)
+                       if item:
+                           item.setData(Qt.ItemDataRole.UserRole, "highlighted")
+                           # Підсвічуємо фоном всі комірки
+                           item.setBackground(QColor(highlight_color.red(), highlight_color.green(), highlight_color.blue(), 30))
+           
+           # Якщо знайдені товари, прокручуємо до першого
+           if highlighted_rows:
+               self.table.scrollToItem(
+                   self.table.item(highlighted_rows[0], 0),
+                   QAbstractItemView.ScrollHint.PositionAtCenter
+               )
+       except Exception as e:
+           logging.error(f"Помилка при підсвічуванні товарів: {e}")
+
+   def set_status_message(self, message, timeout=0):
+       """
+       Встановлює статусне повідомлення у статус-бар
+       
+       :param message: Текст повідомлення
+       :param timeout: Час в мс, через який повідомлення буде автоматично очищено (0 - не очищати)
+       """
+       if self.parent_window:
+           self.parent_window.set_status_message(message, timeout)
+       else:
+           logging.debug(f"Статусне повідомлення (без батьківського вікна): {message}")
+
+# Додаємо спеціальний клас делегата для першої колонки з номерами
+class NumberColumnDelegate(QStyledItemDelegate):
+    def __init__(self, parent=None, is_dark_theme=False):
+        super().__init__(parent)
+        self.is_dark_theme = is_dark_theme
+        self.highlight_color = QColor("#7851A9")  # Корпоративний фіолетовий колір
+        
+    def paint(self, painter, option, index):
+        if index.column() == 0:  # Тільки для першої колонки з номерами
+            # Отримуємо дані
+            text = index.model().data(index, Qt.ItemDataRole.DisplayRole)
+            if not text:
+                return
+                
+            # Визначаємо стиль відображення
+            painter.save()
+            
+            # Зафарбовуємо фон
+            if option.state & QStyle.StateFlag.State_Selected:
+                # Використовуємо корпоративний фіолетовий колір замість стандартного
+                painter.fillRect(option.rect, self.highlight_color)
+                text_color = QColor("white")  # Білий текст на фіолетовому фоні
+            else:
+                painter.fillRect(option.rect, option.palette.base())
+                text_color = QColor("white") if self.is_dark_theme else QColor("black")
+                
+            # Налаштовуємо шрифт
+            font = QFont("Arial", 13)
+            painter.setFont(font)
+            
+            # Встановлюємо колір тексту
+            painter.setPen(text_color)
+            
+            # Малюємо текст з відступами
+            text_rect = option.rect.adjusted(15, 0, -15, 0)  # Горизонтальні відступи по 15px
+            
+            # Розбиваємо текст на основну частину і надстроковий індекс
+            if "<sup>" in text:
+                number, quantity = text.split("<sup>")
+                quantity = quantity.replace("</sup>", "")
+                
+                # Розраховуємо розміри для основного тексту
+                font_metrics = painter.fontMetrics()
+                number_width = font_metrics.horizontalAdvance(number)
+                
+                # Малюємо основний текст
+                painter.drawText(
+                    text_rect,
+                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                    number
+                )
+                
+                # Налаштовуємо шрифт для надстрокового індексу
+                sup_font = QFont("Arial", 10)
+                painter.setFont(sup_font)
+                
+                # Покращуємо позиціонування надстрокового індексу
+                sup_rect = QRect(
+                    text_rect.x() + number_width,
+                    text_rect.y() + (text_rect.height() // 4) - 2,  # Краще вертикальне позиціонування
+                    font_metrics.horizontalAdvance(quantity) + 5,
+                    font_metrics.height() // 2
+                )
+                
+                painter.drawText(
+                    sup_rect,
+                    Qt.AlignmentFlag.AlignLeft,
+                    quantity
+                )
+            else:
+                painter.drawText(
+                    text_rect,
+                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                    text
+                )
+                
+            painter.restore()
+        else:
+            super().paint(painter, option, index)
+    
+    def setDarkTheme(self, is_dark):
+        self.is_dark_theme = is_dark
+        

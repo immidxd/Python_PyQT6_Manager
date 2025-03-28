@@ -19,7 +19,8 @@ from PyQt6.QtWidgets import (
  QMessageBox, QHeaderView, QTableWidgetItem, QAbstractItemView,
  QListWidget, QListWidgetItem, QGraphicsOpacityEffect, QGroupBox,
  QGraphicsDropShadowEffect, QComboBox, QScrollArea, QCalendarWidget,
- QDialog, QToolButton, QMenu, QApplication, QProgressBar
+ QDialog, QToolButton, QMenu, QApplication, QProgressBar,
+ QStyledItemDelegate, QStyle
 )
 from PyQt6.QtGui import QFont, QPixmap, QColor, QCursor, QIcon, QMouseEvent, QAction
 from PyQt6.QtCore import (
@@ -53,10 +54,69 @@ from sqlalchemy import or_, desc, func, Float, cast, String, distinct
 from datetime import datetime, timedelta
 
 # У секції імпортів додаємо:
-from .scripts import parsing_api
+from views.scripts import async_parsing_api as parsing_api
 import threading
 import time
 import types
+
+# Додаємо функції, які використовуються в _install_async_parsing
+def parse_google_sheets(self, force_process=False):
+    """Асинхронний парсинг Google Sheets"""
+    try:
+        # Використовуємо API для запуску парсингу
+        sheet_url = "https://docs.google.com/spreadsheets/d/1YtLAU5JEhbJsHM8p9NjM1bP66GN1a0FrUNULLp6z3yw/edit"  # Замініть на реальний URL
+        
+        result = parsing_api.AsyncParsingAPI.start_parsing([sheet_url], force_process)
+        
+        if result.get("success"):
+            logging.info(f"Парсинг запущено: {result.get('message')}")
+            return True
+        else:
+            logging.error(f"Помилка запуску парсингу: {result.get('message')}")
+            return False
+    except Exception as e:
+        logging.error(f"Помилка при парсингу: {e}")
+        logging.error(traceback.format_exc())
+        return False
+
+def refresh_orders_table(self):
+    """Оновлює таблицю замовлень за допомогою асинхронного API"""
+    try:
+        # Отримуємо дані через API
+        asyncio.ensure_future(self.apply_orders_filters())
+    except Exception as e:
+        logging.error(f"Помилка оновлення таблиці замовлень: {e}")
+        logging.error(traceback.format_exc())
+
+def start_ui_update_thread(self):
+    """Запускає потік для періодичного оновлення інтерфейсу під час парсингу"""
+    def update_ui_thread():
+        try:
+            while True:
+                # Отримуємо поточний статус парсингу
+                status = parsing_api.AsyncParsingAPI.get_status()
+                
+                # Оновлюємо UI в основному потоці
+                QtCore.QMetaObject.invokeMethod(
+                    self,
+                    "refresh_orders_table",
+                    QtCore.Qt.ConnectionType.QueuedConnection
+                )
+                
+                # Перевіряємо чи парсинг завершено
+                if not status.get("is_running", False):
+                    break
+                    
+                # Пауза перед наступною перевіркою
+                time.sleep(3)
+        except Exception as e:
+            logging.error(f"Помилка в потоці оновлення UI: {e}")
+            logging.error(traceback.format_exc())
+    
+    # Запускаємо фоновий потік
+    ui_thread = threading.Thread(target=update_ui_thread, daemon=True)
+    ui_thread.start()
+    return ui_thread
 
 # Перенесені функції для фільтрації на рівень модуля
 def fix_unpaid_filter(q, session):
@@ -311,6 +371,10 @@ class OrdersTab(QWidget):
      for idx in self.orders_optional_indices:
          self.orders_table.setColumnHidden(idx, True)
 
+     # Налаштовуємо контекстне меню для таблиці замовлень
+     self.orders_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+     self.orders_table.customContextMenuRequested.connect(self.show_orders_context_menu)
+
      self.orders_opacity_effect = QGraphicsOpacityEffect()
      self.orders_table.setGraphicsEffect(self.orders_opacity_effect)
 
@@ -405,7 +469,7 @@ class OrdersTab(QWidget):
              background-color: #d0d0d0;
          }
          """)
-     self.orders_refresh_button.clicked.connect(lambda: asyncio.ensure_future(self.run_orders_parsing_script()))
+     self.orders_refresh_button.clicked.connect(lambda: self.run_refresh_from_shared_button())
      buttons_layout.addWidget(self.orders_refresh_button)
      
      # Кнопка для парсингу замовлень
@@ -446,6 +510,10 @@ class OrdersTab(QWidget):
      
      # Оновлюємо вигляд кнопки календаря
      self._update_calendar_button_state()
+
+     # Додаємо делегат для колонки з товарами
+     self.products_delegate = ProductsColumnDelegate(self.orders_table, self.is_dark_theme)
+     self.orders_table.setItemDelegateForColumn(1, self.products_delegate)
 
  def set_orders_scroll_style(self):
      """
@@ -628,7 +696,13 @@ class OrdersTab(QWidget):
          self.parent_window.toggle_theme_global()
 
  def apply_external_theme(self, is_dark):
+     """Застосовує зовнішню тему до вкладки"""
      self.is_dark_theme = is_dark
+     
+     # Оновлюємо делегат з новою темою
+     if hasattr(self, 'products_delegate'):
+         self.products_delegate.setDarkTheme(is_dark)
+     
      update_text_colors(self.parent_window, self.is_dark_theme)
      self.update_orders_theme_icon()
 
@@ -1391,9 +1465,10 @@ class OrdersTab(QWidget):
                     Client.first_name.ilike(f"%{search_text}%"),
                     Client.last_name.ilike(f"%{search_text}%"),
                     Order.tracking_number.ilike(f"%{search_text}%"),
-                     Order.notes.ilike(f"%{search_text}%"),
-                     Order.details.ilike(f"%{search_text}%"),
-                     cast(Order.id, String).ilike(f"%{search_text}%")
+                    Order.notes.ilike(f"%{search_text}%"),
+                    # Виправляємо помилку з JSONB полем, перетворюючи його в текст
+                    cast(Order.details, String).ilike(f"%{search_text}%"),
+                    cast(Order.id, String).ilike(f"%{search_text}%")
                  )
              )
          
@@ -1630,38 +1705,9 @@ class OrdersTab(QWidget):
                          products_list.append(product_info)
              products_text = "; ".join(products_list) if products_list else "Немає товарів"
              
-             # Створюємо QLabel з HTML-розміткою замість QTableWidgetItem
-             from PyQt6.QtWidgets import QLabel
-             products_label = QLabel(products_text)
-             products_label.setTextFormat(Qt.TextFormat.RichText)
-             
-             # Зробимо стиль більш відповідним до стилю комірок таблиці "товари"
-             # Збільшуємо лівий відступ для узгодження з таблицею товарів (з 10px до 15px)
-             products_label.setFont(QFont("Arial", 13))
-             # Встановлюємо стиль з урахуванням поточної теми
-             text_color = "white" if self.is_dark_theme else "black"
-             products_label.setStyleSheet(f"""
-                 QLabel {{
-                     padding: 5px 15px;
-                     margin: 5px 0;
-                     min-height: 30px;
-                     background-color: transparent;
-                     color: {text_color};
-                 }}
-             """)
-             products_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
-             
-             # Встановлюємо внутрішні відступи для вирівнювання
-             margins = products_label.contentsMargins()
-             margins.setTop(-9)  # Збільшуємо від'ємний відступ зверху ще більше
-             margins.setBottom(9)
-             products_label.setContentsMargins(margins)
-             
-             # Зберігаємо мітку для можливості оновлення кольору при зміні теми
-             products_label.setProperty("role", "product_cell")
-             
-             # Встановлюємо QLabel в комірку таблиці
-             self.orders_table.setCellWidget(row, 1, products_label)
+             # Замість QLabel використовуємо QTableWidgetItem з текстом для делегата
+             products_item = QTableWidgetItem(products_text)
+             self.orders_table.setItem(row, 1, products_item)
              
              # Клони номерів (якщо є)
              clones_item = QTableWidgetItem(order.alternative_order_number or "")
@@ -2382,3 +2428,311 @@ class OrdersTab(QWidget):
                      color: {text_color};
                  }}
              """)
+
+ def show_orders_context_menu(self, pos):
+     """
+     Відображає контекстне меню при кліку правою кнопкою миші на замовленні
+     
+     :param pos: Позиція кліку мишкою
+     """
+     try:
+         row = self.orders_table.indexAt(pos).row()
+         if row < 0:
+             return
+             
+         menu = QMenu(self)
+         
+         # Отримуємо дані про замовлення
+         order_id_item = self.orders_table.item(row, 0)  # ID замовлення
+         if not order_id_item:
+             return
+             
+         order_id = order_id_item.text()
+         
+         # Отримуємо список продуктів з комірки "Товари"
+         products_widget = self.orders_table.cellWidget(row, 1)  # Колонка "Товари"
+         products_text = ""
+         
+         if products_widget and hasattr(products_widget, 'text'):
+             # Очищаємо від HTML-тегів для отримання чистого тексту
+             products_text = re.sub(r'<.*?>', '', products_widget.text())
+         
+         # Опція "Показати в товарах"
+         show_in_products_action = QAction("Показати в товарах", self)
+         show_in_products_action.triggered.connect(lambda checked=False, oid=order_id: self.show_in_products(oid))
+         menu.addAction(show_in_products_action)
+         
+         # Опція "Показати в Google Sheets"
+         show_in_sheets_action = QAction("Показати в Google Sheets", self)
+         show_in_sheets_action.triggered.connect(lambda checked=False, oid=order_id: self.show_in_google_sheets(oid))
+         menu.addAction(show_in_sheets_action)
+         
+         # Опція "Видалити"
+         delete_action = QAction("Видалити", self)
+         delete_action.triggered.connect(lambda checked=False, r=row: self.delete_order(r))
+         menu.addAction(delete_action)
+         
+         # Відображаємо меню
+         if hasattr(menu, 'exec_'):
+             menu.exec_(self.orders_table.viewport().mapToGlobal(pos))
+         else:
+             menu.exec(self.orders_table.viewport().mapToGlobal(pos))
+     except Exception as e:
+         logging.error(f"Помилка при показі контекстного меню замовлень: {e}")
+         logging.error(traceback.format_exc())
+
+ def show_in_products(self, order_id):
+     """
+     Переходить на вкладку товарів і підсвічує товари з вказаного замовлення
+     
+     :param order_id: ID замовлення
+     """
+     try:
+         if not order_id:
+             logging.warning("Спроба показати порожній ID замовлення в товарах")
+             return
+             
+         if self.parent():
+             # Перемикаємося на вкладку товарів
+             self.parent().tab_widget.setCurrentIndex(0)
+             
+             # Отримуємо список товарів для замовлення з бази даних
+             # та налаштовуємо фільтри для показу цих товарів
+             asyncio.ensure_future(self.parent().products_tab.show_products_for_order(order_id))
+         else:
+             logging.error("Неможливо перейти до товарів: відсутнє головне вікно")
+     except Exception as e:
+         logging.error(f"Помилка при переході до товарів: {e}")
+         self.show_error_message(f"Не вдалося показати замовлення в товарах: {str(e)}")
+
+ def show_in_google_sheets(self, order_id):
+     """
+     Відкриває Google Sheets з замовленням
+     
+     :param order_id: ID замовлення
+     """
+     try:
+         if not order_id:
+             logging.warning("Спроба показати порожній ID замовлення в Google Sheets")
+             return
+             
+         # TODO: Реалізувати логіку відкриття Google Sheets з замовленням
+         QMessageBox.information(self, "Google Sheets", f"Відкриття замовлення {order_id} в Google Sheets (функція в розробці)")
+     except Exception as e:
+         logging.error(f"Помилка при відкритті Google Sheets: {e}")
+         self.show_error_message(f"Не вдалося відкрити Google Sheets: {str(e)}")
+
+ def delete_order(self, row):
+     """
+     Видаляє замовлення з бази даних
+     
+     :param row: Індекс рядка в таблиці
+     """
+     try:
+         id_item = self.orders_table.item(row, 0)
+         if not id_item:
+             return
+             
+         order_id = id_item.text()
+         
+         # Запитуємо підтвердження
+         reply = QMessageBox.question(
+             self, 
+             "Підтвердження видалення", 
+             f"Ви впевнені, що хочете видалити замовлення #{order_id}?",
+             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, 
+             QMessageBox.StandardButton.No
+         )
+         
+         if reply == QMessageBox.StandardButton.Yes:
+             # TODO: Реалізувати логіку видалення замовлення з бази даних
+             QMessageBox.information(self, "Видалення", f"Видалення замовлення #{order_id} (функція в розробці)")
+             
+             # Після видалення оновлюємо таблицю
+             asyncio.ensure_future(self.apply_orders_filters())
+     except Exception as e:
+         logging.error(f"Помилка при видаленні замовлення: {e}")
+         logging.error(traceback.format_exc())
+         self.show_error_message(f"Не вдалося видалити замовлення: {str(e)}")
+
+ def run_refresh_from_shared_button(self):
+     """Викликає універсальний метод оновлення з головного вікна"""
+     if self.parent_window:
+         self.parent_window.show_update_dialog_and_parse()
+     else:
+         # Якщо вікно недоступне, використовуємо старий метод універсального парсингу
+         self.window().start_universal_parsing()
+
+# Додаємо спеціальний клас делегата для колонки з товарами
+class ProductsColumnDelegate(QStyledItemDelegate):
+    def __init__(self, parent=None, is_dark_theme=False):
+        super().__init__(parent)
+        self.is_dark_theme = is_dark_theme
+        self.highlight_color = QColor("#7851A9")  # Корпоративний фіолетовий колір
+        
+    def paint(self, painter, option, index):
+        if index.column() == 1:  # Тільки для колонки з товарами
+            # Отримуємо дані
+            text = index.model().data(index, Qt.ItemDataRole.DisplayRole)
+            if not text:
+                return
+                
+            # Визначаємо стиль відображення
+            painter.save()
+            
+            # Зафарбовуємо фон
+            if option.state & QStyle.StateFlag.State_Selected:
+                # Використовуємо корпоративний фіолетовий колір замість стандартного
+                painter.fillRect(option.rect, self.highlight_color)
+                text_color = QColor("white")  # Білий текст на фіолетовому фоні
+            else:
+                painter.fillRect(option.rect, option.palette.base())
+                text_color = QColor("white") if self.is_dark_theme else QColor("black")
+                
+            # Налаштовуємо шрифт
+            font = QFont("Arial", 13)
+            painter.setFont(font)
+            
+            # Встановлюємо колір тексту
+            painter.setPen(text_color)
+            
+            # Малюємо текст з відступами
+            text_rect = option.rect.adjusted(15, 0, -15, 0)  # Горизонтальні відступи по 15px
+            
+            # Якщо текст містить HTML-форматування з <sup>
+            if "<sup>" in text:
+                # Розділяємо текст на частини з продуктами
+                products = text.split("; ")
+                
+                # Якщо це один продукт, просто центруємо його вертикально
+                if len(products) == 1 or products[0] == "Немає товарів":
+                    if products[0] == "Немає товарів":
+                        painter.drawText(
+                            text_rect,
+                            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                            products[0]
+                        )
+                    else:
+                        # Обробляємо один продукт, центруючи його вертикально
+                        product = products[0]
+                        if "<sup>" in product:
+                            parts = product.split("<sup>")
+                            number = parts[0]
+                            quantity = parts[1].replace("</sup>", "")
+                            
+                            # Розраховуємо розміри для тексту
+                            font_metrics = painter.fontMetrics()
+                            number_width = font_metrics.horizontalAdvance(number)
+                            
+                            # Малюємо номер продукту (центровано вертикально)
+                            painter.drawText(
+                                text_rect,
+                                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                                number
+                            )
+                            
+                            # Малюємо надстроковий індекс (кількість)
+                            sup_font = QFont("Arial", 10)
+                            painter.setFont(sup_font)
+                            
+                            # Створюємо прямокутник для надстрокового індексу, зміщений вгору відносно центру
+                            sup_rect = QRect(
+                                text_rect.x() + number_width,
+                                text_rect.y() + (text_rect.height() // 4) - 2,  # Краще вертикальне позиціонування
+                                font_metrics.horizontalAdvance(quantity) + 5,
+                                font_metrics.height() // 2
+                            )
+                            
+                            painter.drawText(
+                                sup_rect,
+                                Qt.AlignmentFlag.AlignLeft,
+                                quantity
+                            )
+                        else:
+                            painter.drawText(
+                                text_rect,
+                                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                                product
+                            )
+                else:
+                    # Для декількох продуктів розраховуємо розташування кожного
+                    font_metrics = painter.fontMetrics()
+                    total_height = font_metrics.height() * len(products)
+                    spacing = 5
+                    total_height += spacing * (len(products) - 1)
+                    
+                    # Розраховуємо початковий відступ для центрування всіх продуктів
+                    start_y = text_rect.y() + (text_rect.height() - total_height) // 2
+                    
+                    for i, product in enumerate(products):
+                        if not product:
+                            continue
+                            
+                        current_y = start_y + i * (font_metrics.height() + spacing)
+                        
+                        # Розбиваємо на номер продукту і кількість
+                        if "<sup>" in product:
+                            parts = product.split("<sup>")
+                            number = parts[0]
+                            quantity = parts[1].replace("</sup>", "")
+                            
+                            number_width = font_metrics.horizontalAdvance(number)
+                            
+                            # Малюємо номер продукту
+                            current_rect = QRect(
+                                text_rect.x(), 
+                                current_y,
+                                text_rect.width() - font_metrics.horizontalAdvance(quantity) - 5,
+                                font_metrics.height()
+                            )
+                            painter.drawText(
+                                current_rect,
+                                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                                number
+                            )
+                            
+                            # Малюємо надстроковий індекс (кількість)
+                            sup_font = QFont("Arial", 10)
+                            painter.setFont(sup_font)
+                            
+                            sup_rect = QRect(
+                                text_rect.x() + number_width,
+                                current_y - 3,  # Трохи вище для надстрокового індексу
+                                font_metrics.horizontalAdvance(quantity) + 5,
+                                font_metrics.height()
+                            )
+                            painter.drawText(
+                                sup_rect,
+                                Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft,
+                                quantity
+                            )
+                            
+                            # Повертаємо звичайний шрифт
+                            painter.setFont(font)
+                        else:
+                            # Якщо немає надстрокового індексу, просто малюємо текст
+                            current_rect = QRect(
+                                text_rect.x(), 
+                                current_y,
+                                text_rect.width(),
+                                font_metrics.height()
+                            )
+                            painter.drawText(
+                                current_rect,
+                                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                                product
+                            )
+            else:
+                # Якщо немає HTML-форматування, малюємо текст як є
+                painter.drawText(
+                    text_rect,
+                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                    text
+                )
+                
+            painter.restore()
+        else:
+            super().paint(painter, option, index)
+    
+    def setDarkTheme(self, is_dark):
+        self.is_dark_theme = is_dark

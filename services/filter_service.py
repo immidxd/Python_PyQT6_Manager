@@ -159,7 +159,7 @@ def get_suggestions(query, db_session=None):
                limit=5
            )
            
-           for match, score in fuzzy_matches:
+           for match, score, _ in fuzzy_matches:
                if match not in matching_recent:
                    matching_recent.append(match)
                    if len(matching_recent) >= 5:
@@ -184,12 +184,12 @@ def get_suggestions(query, db_session=None):
        all_values = [item for sublist in EXTENDED_SYNONYMS.values() for item in sublist]
        
        fuzzy_key_matches = fuzzy_search(query, all_keys, threshold=70, limit=3)
-       for match, score in fuzzy_key_matches:
+       for match, score, _ in fuzzy_key_matches:
            if match not in suggestions["Рекомендації"]:
                suggestions["Рекомендації"].append(match)
        
        fuzzy_val_matches = fuzzy_search(query, all_values, threshold=70, limit=3)
-       for match, score in fuzzy_val_matches:
+       for match, score, _ in fuzzy_val_matches:
            # Знаходимо ключі для цього значення
            for key, values in EXTENDED_SYNONYMS.items():
                if match in values and key not in suggestions["Рекомендації"]:
@@ -210,14 +210,14 @@ def get_suggestions(query, db_session=None):
        all_models = db_session.query(Product.model).distinct().all()
        model_values = [m[0] for m in all_models if m[0]]
        fuzzy_model_matches = fuzzy_search(query, model_values, threshold=70, limit=5)
-       suggestions["Модель"] = [match for match, score in fuzzy_model_matches]
+       suggestions["Модель"] = [match for match, score, _ in fuzzy_model_matches]
        
        # Опис - використовуємо нечіткий пошук для коротких фраз
        all_descriptions = db_session.query(Product.description).distinct().all()
        # Виберемо тільки короткі описи для підказок (менше 40 символів)
        short_descriptions = [d[0] for d in all_descriptions if d[0] and len(d[0]) < 40]
        fuzzy_desc_matches = fuzzy_search(query, short_descriptions, threshold=65, limit=5)
-       suggestions["Опис"] = [match for match, score in fuzzy_desc_matches]
+       suggestions["Опис"] = [match for match, score, _ in fuzzy_desc_matches]
    
    except Exception as e:
        logging.error(f"Помилка при отриманні підказок: {e}")
@@ -887,7 +887,7 @@ def expanded_search_query(search_text, db_session=None):
             )
             
             # Додаємо нечіткі співпадіння
-            for match, score in fuzzy_matches:
+            for match, score, _ in fuzzy_matches:
                 search_terms.append(match)
                 
         except Exception as e:
